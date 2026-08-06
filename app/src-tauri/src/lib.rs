@@ -3,16 +3,20 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
+#[cfg(unix)]
+use std::io::Write;
 use std::io::{BufRead, BufReader, Read};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,6 +85,7 @@ struct RuntimeStore {
 #[derive(Default)]
 struct AppState {
     store: Mutex<RuntimeStore>,
+    privilege_ready: AtomicBool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -116,6 +121,14 @@ struct AutoConnectError {
     profile_id: String,
     profile_name: String,
     message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PrivilegeStatus {
+    required: bool,
+    ready: bool,
+    platform: String,
 }
 
 const KEYRING_SERVICE: &str = "com.baozaodetudou.openfortivpn";
@@ -650,6 +663,7 @@ fn save_profile(
         )
     };
 
+    publish_privilege_status(&app);
     Ok(view)
 }
 
@@ -682,7 +696,10 @@ fn delete_profile(
     store.profiles.remove(&profile_id);
     store.secrets.remove(&profile_id);
     store.stored_secret_profiles.remove(&profile_id);
-    persist_profiles(&app, &store.profiles)
+    persist_profiles(&app, &store.profiles)?;
+    drop(store);
+    publish_privilege_status(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -722,6 +739,157 @@ fn engine_info(app: AppHandle) -> EngineInfo {
     }
 }
 
+#[cfg(unix)]
+fn has_sudo_profiles(app: &AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    state
+        .store
+        .lock()
+        .map(|store| store.profiles.values().any(|profile| profile.use_sudo))
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn sudo_engine_ready(app: &AppHandle) -> bool {
+    let engine = resolve_engine(app);
+    matches!(
+        Command::new("sudo")
+            .arg("-n")
+            .arg(engine)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status(),
+        Ok(status) if status.success()
+    )
+}
+
+fn privilege_status_value(app: &AppHandle, ready: bool) -> PrivilegeStatus {
+    #[cfg(unix)]
+    let required = has_sudo_profiles(app);
+    #[cfg(windows)]
+    let required = false;
+
+    PrivilegeStatus {
+        required,
+        ready: !required || ready,
+        platform: env::consts::OS.to_string(),
+    }
+}
+
+fn set_privilege_ready(app: &AppHandle, ready: bool, emit_change: bool) -> PrivilegeStatus {
+    let state = app.state::<AppState>();
+    let previous = state.privilege_ready.swap(ready, Ordering::SeqCst);
+    let status = privilege_status_value(app, ready);
+    if emit_change && previous != ready {
+        let _ = app.emit("vpn-privilege-changed", status.clone());
+    }
+    status
+}
+
+fn refresh_privilege_status(app: &AppHandle, emit_change: bool) -> PrivilegeStatus {
+    #[cfg(unix)]
+    let ready = has_sudo_profiles(app) && sudo_engine_ready(app);
+    #[cfg(windows)]
+    let ready = true;
+
+    set_privilege_ready(app, ready, emit_change)
+}
+
+fn publish_privilege_status(app: &AppHandle) -> PrivilegeStatus {
+    let status = refresh_privilege_status(app, false);
+    let _ = app.emit("vpn-privilege-changed", status.clone());
+    status
+}
+
+#[cfg(unix)]
+fn authenticate_sudo(password: &mut String) -> Result<(), String> {
+    // With no terminal attached, sudo scopes its timestamp to this app's parent
+    // process ID. Later sudo children from the same app can reuse that session.
+    let mut child = Command::new("sudo")
+        .args(["-S", "-p", "", "-v"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("无法启动 sudo：{error}"))?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "无法向 sudo 提交管理员密码".to_string())?;
+    let write_result = stdin
+        .write_all(password.as_bytes())
+        .and_then(|()| stdin.write_all(b"\n"));
+    password.zeroize();
+    write_result.map_err(|error| format!("无法向 sudo 提交管理员密码：{error}"))?;
+    drop(stdin);
+
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("无法等待 sudo 验证结果：{error}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err("管理员密码验证失败，或当前用户没有 sudo 权限".to_string())
+    }
+}
+
+#[tauri::command]
+fn privilege_status(app: AppHandle) -> PrivilegeStatus {
+    refresh_privilege_status(&app, false)
+}
+
+#[tauri::command]
+fn unlock_privileges(app: AppHandle, mut password: String) -> Result<PrivilegeStatus, String> {
+    #[cfg(unix)]
+    let result = if password.is_empty() {
+        Err("请输入电脑管理员密码".to_string())
+    } else {
+        authenticate_sudo(&mut password).and_then(|()| {
+            if sudo_engine_ready(&app) {
+                Ok(set_privilege_ready(&app, true, true))
+            } else {
+                Err("sudo 已完成验证，但当前用户无权运行 openfortivpn".to_string())
+            }
+        })
+    };
+
+    #[cfg(windows)]
+    let result = Ok(set_privilege_ready(&app, true, true));
+
+    password.zeroize();
+    result
+}
+
+fn start_privilege_keepalive(app: AppHandle) {
+    #[cfg(unix)]
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(60));
+        let state = app.state::<AppState>();
+        if !state.privilege_ready.load(Ordering::SeqCst) {
+            continue;
+        }
+
+        let refreshed = matches!(
+            Command::new("sudo")
+                .args(["-n", "-v"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status(),
+            Ok(status) if status.success()
+        ) || sudo_engine_ready(&app);
+        if !refreshed {
+            set_privilege_ready(&app, false, true);
+        }
+    });
+
+    #[cfg(windows)]
+    let _ = app;
+}
+
 fn start_profile_impl(app: AppHandle, profile_id: String) -> Result<InstanceView, String> {
     let (profile, password) = {
         let state = app.state::<AppState>();
@@ -741,6 +909,15 @@ fn start_profile_impl(app: AppHandle, profile_id: String) -> Result<InstanceView
             .ok_or_else(|| "密码未保存在当前会话，请编辑配置并重新输入密码".to_string())?;
         (profile, password)
     };
+
+    #[cfg(unix)]
+    if profile.use_sudo {
+        if !sudo_engine_ready(&app) {
+            set_privilege_ready(&app, false, true);
+            return Err("管理员权限尚未解锁，请先输入电脑管理员密码".to_string());
+        }
+        set_privilege_ready(&app, true, true);
+    }
 
     let instance_id = Uuid::new_v4().to_string();
     let adapter_name = make_adapter_name(&profile, &instance_id);
@@ -826,46 +1003,97 @@ fn stop_instance(
     state: State<'_, AppState>,
     instance_id: String,
 ) -> Result<(), String> {
-    let (child, pid, view) = {
+    let (child, pid, use_sudo, previous_status) = {
+        let store = lock_store(&state)?;
+        let profile_id = store
+            .instances
+            .get(&instance_id)
+            .map(|instance| instance.view.profile_id.clone())
+            .ok_or_else(|| "找不到指定连接实例".to_string())?;
+        let use_sudo = store
+            .profiles
+            .get(&profile_id)
+            .map(|profile| profile.use_sudo)
+            .unwrap_or(true);
+        let instance = store
+            .instances
+            .get(&instance_id)
+            .ok_or_else(|| "找不到指定连接实例".to_string())?;
+        if matches!(instance.view.status.as_str(), "disconnected" | "failed") {
+            return Ok(());
+        }
+        (
+            instance.child.clone(),
+            instance.view.pid,
+            use_sudo,
+            instance.view.status.clone(),
+        )
+    };
+
+    #[cfg(unix)]
+    if use_sudo && !sudo_engine_ready(&app) {
+        set_privilege_ready(&app, false, true);
+        return Err("管理员权限已失效，请重新解锁后再断开连接".to_string());
+    }
+
+    let view = {
         let mut store = lock_store(&state)?;
         let instance = store
             .instances
             .get_mut(&instance_id)
             .ok_or_else(|| "找不到指定连接实例".to_string())?;
-        if matches!(instance.view.status.as_str(), "disconnected" | "failed") {
-            return Ok(());
-        }
         instance.view.status = "disconnecting".to_string();
         instance.view.message = "正在断开连接".to_string();
-        (
-            instance.child.clone(),
-            instance.view.pid,
-            instance.view.clone(),
-        )
+        instance.view.clone()
     };
     emit_instance(&app, &view);
 
     #[cfg(unix)]
     {
-        let result = Command::new("kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
-            .status();
+        let result = if use_sudo {
+            Command::new("sudo")
+                .args(["-n", "kill", "-TERM"])
+                .arg(pid.to_string())
+                .status()
+        } else {
+            Command::new("kill")
+                .arg("-TERM")
+                .arg(pid.to_string())
+                .status()
+        };
         if !matches!(result, Ok(status) if status.success()) {
-            let mut child = child.lock().map_err(|_| "无法访问 VPN 进程".to_string())?;
-            child
-                .kill()
-                .map_err(|error| format!("无法停止 VPN 进程：{error}"))?;
+            let fallback = child
+                .lock()
+                .map_err(|_| "无法访问 VPN 进程".to_string())?
+                .kill();
+            if let Err(error) = fallback {
+                update_instance(
+                    &app,
+                    &instance_id,
+                    &previous_status,
+                    format!("断开失败：{error}"),
+                );
+                return Err(format!("无法停止 VPN 进程：{error}"));
+            }
         }
     }
 
     #[cfg(windows)]
     {
-        let _ = pid;
-        let mut child = child.lock().map_err(|_| "无法访问 VPN 进程".to_string())?;
-        child
-            .kill()
-            .map_err(|error| format!("无法停止 VPN 进程：{error}"))?;
+        let _ = (pid, use_sudo);
+        let result = child
+            .lock()
+            .map_err(|_| "无法访问 VPN 进程".to_string())?
+            .kill();
+        if let Err(error) = result {
+            update_instance(
+                &app,
+                &instance_id,
+                &previous_status,
+                format!("断开失败：{error}"),
+            );
+            return Err(format!("无法停止 VPN 进程：{error}"));
+        }
     }
 
     Ok(())
@@ -879,6 +1107,39 @@ fn export_profile_config(state: State<'_, AppState>, profile_id: String) -> Resu
         .get(&profile_id)
         .ok_or_else(|| "找不到指定配置".to_string())?;
     render_runtime_config(profile, "", "openfortivpn")
+}
+
+fn profile_has_active_instance(app: &AppHandle, profile_id: &str) -> bool {
+    let state = app.state::<AppState>();
+    state
+        .store
+        .lock()
+        .map(|store| {
+            store.instances.values().any(|instance| {
+                instance.view.profile_id == profile_id
+                    && matches!(
+                        instance.view.status.as_str(),
+                        "starting" | "connecting" | "connected" | "disconnecting"
+                    )
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn attempt_auto_connect(app: &AppHandle, profile_id: String, profile_name: String) {
+    if profile_has_active_instance(app, &profile_id) {
+        return;
+    }
+    if let Err(message) = start_profile_impl(app.clone(), profile_id.clone()) {
+        let _ = app.emit(
+            "vpn-autoconnect-error",
+            AutoConnectError {
+                profile_id,
+                profile_name,
+                message,
+            },
+        );
+    }
 }
 
 fn start_auto_connect_profiles(app: AppHandle, credential_errors: Vec<AutoConnectError>) {
@@ -905,20 +1166,37 @@ fn start_auto_connect_profiles(app: AppHandle, credential_errors: Vec<AutoConnec
                 .filter(|profile| {
                     profile.auto_connect && !credential_error_profiles.contains(&profile.id)
                 })
-                .map(|profile| (profile.id.clone(), profile.name.clone()))
+                .map(|profile| (profile.id.clone(), profile.name.clone(), profile.use_sudo))
                 .collect::<Vec<_>>()
         };
 
-        for (profile_id, profile_name) in profiles {
-            if let Err(message) = start_profile_impl(app.clone(), profile_id.clone()) {
-                let _ = app.emit(
-                    "vpn-autoconnect-error",
-                    AutoConnectError {
-                        profile_id,
-                        profile_name,
-                        message,
-                    },
-                );
+        let mut waiting_for_privilege = Vec::new();
+        for (profile_id, profile_name, use_sudo) in profiles {
+            if cfg!(unix)
+                && use_sudo
+                && !app
+                    .state::<AppState>()
+                    .privilege_ready
+                    .load(Ordering::SeqCst)
+            {
+                waiting_for_privilege.push((profile_id, profile_name));
+            } else {
+                attempt_auto_connect(&app, profile_id, profile_name);
+            }
+        }
+
+        while !waiting_for_privilege.is_empty() {
+            thread::sleep(Duration::from_millis(250));
+            if !app
+                .state::<AppState>()
+                .privilege_ready
+                .load(Ordering::SeqCst)
+            {
+                continue;
+            }
+
+            for (profile_id, profile_name) in waiting_for_privilege.drain(..) {
+                attempt_auto_connect(&app, profile_id, profile_name);
             }
         }
     });
@@ -963,6 +1241,8 @@ pub fn run() {
                 store.secrets = secrets;
                 store.stored_secret_profiles = stored_secret_profiles;
             }
+            refresh_privilege_status(app.handle(), false);
+            start_privilege_keepalive(app.handle().clone());
             start_auto_connect_profiles(app.handle().clone(), credential_errors);
             Ok(())
         })
@@ -972,6 +1252,8 @@ pub fn run() {
             delete_profile,
             list_instances,
             engine_info,
+            privilege_status,
+            unlock_privileges,
             start_profile,
             stop_instance,
             export_profile_config,
@@ -1211,5 +1493,19 @@ mod tests {
         assert_eq!(value["instanceId"], "instance-1");
         assert_eq!(value["profileId"], "profile-1");
         assert_eq!(value["payload"]["event"], "cert_error");
+    }
+
+    #[test]
+    fn privilege_status_uses_frontend_field_names() {
+        let value = serde_json::to_value(PrivilegeStatus {
+            required: true,
+            ready: false,
+            platform: "macos".to_string(),
+        })
+        .expect("privilege status should serialize");
+
+        assert_eq!(value["required"], true);
+        assert_eq!(value["ready"], false);
+        assert_eq!(value["platform"], "macos");
     }
 }

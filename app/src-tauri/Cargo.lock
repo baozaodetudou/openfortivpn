@@ -2481,6 +2481,7 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-opener",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

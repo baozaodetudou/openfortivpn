@@ -40,21 +40,52 @@ Each profile can enable **Connect automatically after application startup**.
 Automatic connection requires that profile's password to be saved in the system
 credential store so that it is available after an application restart. A
 profile without a securely stored password remains disconnected until the user
-provides one.
+provides one. On Linux and macOS, profiles that use sudo wait until the startup
+privilege unlock described below succeeds or the user chooses an alternative
+privilege setup; they do not race ahead while the administrator-password dialog
+is pending.
 
 ## Privileges
 
-On Linux and macOS, the manager runs a profile's bundled engine through
-non-interactive `sudo -n` when elevated network privileges are required. A truly
-unattended automatic connection therefore requires a minimal `NOPASSWD` sudoers
-rule that authorizes only the specific bundled `openfortivpn` executable. Do not
-grant passwordless sudo access to arbitrary commands, shells or writable wrapper
-scripts. During development, `sudo -v` can be used to refresh the current sudo
-credential instead.
+### Linux and macOS
 
-On Windows, tunnel and route management requires the application to run with
-administrator privileges. Windows may display a UAC prompt, including when an
-automatic connection is requested after application startup.
+When the manager starts, it can display a one-time privilege-unlock dialog for
+the computer administrator password. The manager passes that password directly
+to `sudo -S -v`, creating a sudo credential cache for the current application
+process session. The password is never written to a file, never saved in the
+operating system credential store and never retained for future launches. Its
+in-memory value is cleared immediately after it has been submitted to sudo.
+
+While the application remains open, it periodically runs `sudo -n -v` to renew
+the credential cache without displaying another prompt. Connections whose
+profiles enable **Use sudo** then launch the bundled engine with `sudo -n`, so
+normal connect, disconnect and reconnect operations do not ask for the computer
+administrator password again. The renewal task stops when the application
+exits. Sudo remains authoritative: its configured timestamp timeout, cache
+scope, revocation and other system policy continue to apply.
+
+This administrator password is not the VPN password. The VPN password belongs
+to an individual profile and continues to be saved in macOS Keychain or Linux
+Secret Service when **Save password in system credential store** is enabled, or
+held in memory for only the current application session when it is disabled.
+The administrator password is used solely to unlock the sudo session described
+above.
+
+If policy does not allow the manager to receive an administrator password, a
+purpose-built native privileged helper is the preferred deployment model once
+one is available. An engine-only `NOPASSWD` rule is not sufficient to safely
+manage the complete process lifecycle. Do not work around that limitation by
+granting passwordless access to unrestricted `kill`, arbitrary commands,
+shells, directories or writable wrapper scripts.
+
+### Windows
+
+Tunnel and route management requires administrator privileges. Windows requests
+elevation once through UAC when the application starts, and the manager's child
+processes inherit the elevated access. The Linux/macOS administrator-password
+dialog is therefore not displayed on Windows. Profiles configured for automatic
+connection wait until startup elevation has completed before their engines are
+launched.
 
 ## Certificate trust (TOFU)
 

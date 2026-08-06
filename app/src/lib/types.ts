@@ -74,3 +74,9 @@ export type AutoConnectError = {
   profileName: string;
   message: string;
 };
+
+export type PrivilegeStatus = {
+  required: boolean;
+  ready: boolean;
+  platform: string;
+};

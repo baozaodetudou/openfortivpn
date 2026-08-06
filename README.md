@@ -39,11 +39,27 @@ only.
 The manager can start when the user logs in on Linux, macOS and Windows. Each
 profile can also be marked to connect automatically after the application
 starts, provided that its password is available from the system credential
-store. On Linux and macOS, unattended connections that run the bundled engine
-through `sudo -n` require a narrowly scoped `NOPASSWD` sudoers rule for that
-specific bundled `openfortivpn` executable. Never grant passwordless access to
-arbitrary commands. Windows connections require administrator privileges and
-may be subject to UAC. See [`app/README.md`](app/README.md) for details.
+store. On Linux and macOS, the manager can ask once for the computer
+administrator password when it starts and submit it to `sudo -S -v` to create a
+sudo credential cache for the current application process session. The password
+is cleared immediately after submission: it is not written to disk, placed in
+the system credential store or retained for later use. While the application is
+running, it periodically renews the cache with `sudo -n -v`, and subsequent
+profiles that use sudo start through `sudo -n` without prompting again. Renewal
+stops when the application exits, and the system's sudo timeout policy still
+applies. Automatic profiles wait for this privilege unlock before connecting.
+
+The computer administrator password is separate from each profile's VPN
+password. VPN passwords continue to be stored per profile in the system
+credential store or held only for the current application session. Sites that
+do not want the application to handle an administrator password should use a
+purpose-built native privileged helper when one is available. An engine-only
+`NOPASSWD` rule is not enough to safely manage the complete process lifecycle;
+do not compensate with unrestricted `kill`, arbitrary commands, shells or
+writable wrapper scripts. On Windows, the
+application instead requests UAC elevation once at startup and its child
+processes inherit that access, so this administrator-password dialog is not
+shown. See [`app/README.md`](app/README.md) for details.
 
 When a first connection encounters a self-signed certificate or another
 certificate that the operating system does not trust, the desktop manager uses

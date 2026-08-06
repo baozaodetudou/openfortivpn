@@ -13,6 +13,7 @@
     InstanceStatus,
     InstanceView,
     LogEvent,
+    PrivilegeStatus,
     ProfileView,
     VpnEngineEvent,
     VpnProfile,
@@ -67,6 +68,13 @@
   let autostartLoading = $state(true);
   let autostartBusy = $state(false);
   let autostartError = $state("");
+  let privilegeStatus = $state<PrivilegeStatus | null>(null);
+  let privilegeInitialized = $state(false);
+  let privilegeModalOpen = $state(false);
+  let administratorPassword = $state("");
+  let privilegeBusy = $state(false);
+  let privilegeError = $state("");
+  let pendingPrivilegeProfileId = $state("");
   const seenCertificateEvents = new Set<string>();
   const pendingCertificates = new Set<string>();
 
@@ -252,14 +260,24 @@
   async function refresh() {
     loading = true;
     try {
-      const [profileList, instanceList, engineState] = await Promise.all([
+      const [profileList, instanceList, engineState, currentPrivilegeStatus] = await Promise.all([
         invoke<ProfileView[]>("list_profiles"),
         invoke<InstanceView[]>("list_instances"),
         invoke<EngineInfo>("engine_info"),
+        invoke<PrivilegeStatus>("privilege_status"),
       ]);
       profiles = profileList;
       instances = instanceList;
       engine = engineState;
+      privilegeStatus = currentPrivilegeStatus;
+      if (
+        !privilegeInitialized &&
+        currentPrivilegeStatus.required &&
+        !currentPrivilegeStatus.ready
+      ) {
+        privilegeModalOpen = true;
+      }
+      privilegeInitialized = true;
       if (!selectedProfileId && profiles.length > 0) {
         selectedProfileId = profiles[0].profile.id;
       }
@@ -344,6 +362,27 @@
   }
 
   async function startProfile(view: ProfileView) {
+    if (view.profile.useSudo) {
+      let currentPrivilegeStatus: PrivilegeStatus;
+      try {
+        currentPrivilegeStatus = await invoke<PrivilegeStatus>(
+          "privilege_status",
+        );
+        privilegeStatus = currentPrivilegeStatus;
+        privilegeInitialized = true;
+      } catch (error) {
+        showError(`无法确认管理员权限状态：${errorText(error)}`);
+        return;
+      }
+
+      if (currentPrivilegeStatus.required && !currentPrivilegeStatus.ready) {
+        privilegeError = "";
+        pendingPrivilegeProfileId = view.profile.id;
+        privilegeModalOpen = true;
+        return;
+      }
+    }
+
     if (!view.hasSecret) {
       editProfile(view);
       showError("请先输入密码；如需应用重启后仍可连接，请保存到系统凭据库");
@@ -434,6 +473,45 @@
     }
   }
 
+  function closePrivilegeModal() {
+    if (privilegeBusy) return;
+    administratorPassword = "";
+    privilegeError = "";
+    pendingPrivilegeProfileId = "";
+    privilegeModalOpen = false;
+  }
+
+  async function unlockPrivileges(event: SubmitEvent) {
+    event.preventDefault();
+    if (privilegeBusy || !administratorPassword) return;
+
+    privilegeBusy = true;
+    privilegeError = "";
+    const pendingProfileId = pendingPrivilegeProfileId;
+    try {
+      const status = await invoke<PrivilegeStatus>("unlock_privileges", {
+        password: administratorPassword,
+      });
+      privilegeStatus = status;
+      privilegeInitialized = true;
+      if (status.required && !status.ready) {
+        throw new Error("系统未确认管理员权限，请检查密码后重试");
+      }
+      privilegeModalOpen = false;
+      pendingPrivilegeProfileId = "";
+      showSuccess("管理员权限已解锁，本次 App 会话内后续连接无需再次输入");
+      const pendingProfile = profiles.find(
+        (entry) => entry.profile.id === pendingProfileId,
+      );
+      if (pendingProfile) await startProfile(pendingProfile);
+    } catch (error) {
+      privilegeError = `解锁失败：${errorText(error)}`;
+    } finally {
+      administratorPassword = "";
+      privilegeBusy = false;
+    }
+  }
+
   onMount(() => {
     const unlisteners: UnlistenFn[] = [];
     void refresh();
@@ -449,6 +527,15 @@
     }).then((unlisten) => unlisteners.push(unlisten));
     void listen<AutoConnectError>("vpn-autoconnect-error", ({ payload }) => {
       showError(`“${payload.profileName}”自动连接失败：${payload.message}`);
+    }).then((unlisten) => unlisteners.push(unlisten));
+    void listen<PrivilegeStatus>("vpn-privilege-changed", ({ payload }) => {
+      privilegeStatus = payload;
+      if (!payload.required || payload.ready) {
+        administratorPassword = "";
+        privilegeError = "";
+        pendingPrivilegeProfileId = "";
+        privilegeModalOpen = false;
+      }
     }).then((unlisten) => unlisteners.push(unlisten));
 
     return () => unlisteners.forEach((unlisten) => unlisten());
@@ -706,6 +793,64 @@
   </main>
 </div>
 
+{#if privilegeModalOpen && privilegeStatus?.required}
+  <div class="modal-backdrop privilege-backdrop" role="presentation">
+    <div
+      class="privilege-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="privilege-title"
+      aria-describedby="privilege-description privilege-storage-note"
+    >
+      <form onsubmit={unlockPrivileges}>
+        <div class="privilege-icon" aria-hidden="true">◆</div>
+        <div class="privilege-heading">
+          <small>本次 APP 会话</small>
+          <h2 id="privilege-title">解锁管理员权限</h2>
+        </div>
+
+        <p id="privilege-description" class="privilege-description">
+          OpenFortiVPN 需要管理员权限来创建网络接口、路由和 DNS 设置。请输入你的<b>电脑管理员密码</b>，这不是 VPN 账号的密码。
+        </p>
+
+        <label class="privilege-password">
+          <span>电脑管理员密码</span>
+          <input
+            type="password"
+            name="openfortivpn-administrator-password"
+            autocomplete="off"
+            required
+            disabled={privilegeBusy}
+            bind:value={administratorPassword}
+            placeholder="输入这台电脑的管理员密码"
+          />
+        </label>
+
+        <div id="privilege-storage-note" class="privilege-note">
+          密码只用于解锁当前 App 会话，提交后会立即从界面内存中清空，不会保存到配置、系统凭据库或 localStorage。
+        </div>
+        {#if privilegeError}
+          <div class="privilege-error" role="alert">{privilegeError}</div>
+        {/if}
+
+        <div class="modal-actions">
+          <button
+            type="button"
+            class="secondary-button"
+            disabled={privilegeBusy}
+            onclick={closePrivilegeModal}
+          >稍后</button>
+          <button
+            type="submit"
+            class="primary-button"
+            disabled={privilegeBusy || !administratorPassword}
+          >{privilegeBusy ? "正在解锁…" : "解锁本次会话"}</button>
+        </div>
+      </form>
+    </div>
+  </div>
+{/if}
+
 {#if editing}
   <div
     class="modal-backdrop"
@@ -916,6 +1061,19 @@
   .toggle-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; } .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; } .toggle input { position: absolute; opacity: 0; pointer-events: none; } .toggle span { position: relative; width: 28px; height: 16px; flex: 0 0 auto; border-radius: 999px; background: #28374b; transition: .18s; } .toggle span::after { position: absolute; top: 3px; left: 3px; width: 10px; height: 10px; border-radius: 50%; background: #8695aa; content: ""; transition: .18s; } .toggle input:checked + span { background: rgba(94,232,177,.28); } .toggle input:checked + span::after { left: 15px; background: var(--brand); } .toggle b { color: #acb9ca; font-size: 9px; font-weight: 650; }
   .modal-note { margin-top: 14px; padding: 10px 11px; border-radius: 9px; color: #8292a9; background: rgba(112,167,255,.055); font-size: 9px; line-height: 1.55; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; }
+  .privilege-backdrop { z-index: 50; }
+  .privilege-modal { width: min(500px, 94vw); padding: 25px; border: 1px solid rgba(112,167,255,.3); border-radius: 17px; background: #0c1727; box-shadow: 0 30px 90px rgba(0,0,0,.55); }
+  .privilege-icon { display: grid; width: 42px; height: 42px; place-items: center; margin-bottom: 16px; border-radius: 13px; color: #07111f; background: var(--blue); font-size: 17px; box-shadow: 0 8px 24px rgba(112,167,255,.17); }
+  .privilege-heading small { color: var(--blue); font-size: 9px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+  .privilege-heading h2 { margin: 5px 0 0; font-size: 20px; }
+  .privilege-description { margin: 16px 0; color: #aebdd0; font-size: 11px; line-height: 1.7; }
+  .privilege-description b { color: var(--text); }
+  .privilege-password span { display: block; margin: 0 0 7px 2px; color: #c4cfdf; font-size: 10px; font-weight: 650; }
+  .privilege-password input { width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: rgba(3,10,18,.56); font-size: 11px; transition: border-color .15s; }
+  .privilege-password input:focus { border-color: rgba(112,167,255,.55); }
+  .privilege-password input::placeholder { color: #4f6077; }
+  .privilege-note { margin-top: 13px; padding: 11px 12px; border: 1px solid rgba(112,167,255,.16); border-radius: 9px; color: #91a4be; background: rgba(112,167,255,.055); font-size: 9px; line-height: 1.65; }
+  .privilege-error { margin-top: 12px; padding: 10px 11px; border: 1px solid rgba(255,124,141,.24); border-radius: 9px; color: #ffc3cb; background: rgba(255,124,141,.08); font-size: 10px; line-height: 1.5; }
   .tofu-backdrop { z-index: 40; }
   .tofu-modal { width: min(560px, 94vw); padding: 25px; border: 1px solid rgba(246,200,108,.32); border-radius: 17px; background: #0c1727; box-shadow: 0 30px 90px rgba(0,0,0,.55); }
   .tofu-icon { display: grid; width: 42px; height: 42px; place-items: center; margin-bottom: 16px; border-radius: 13px; color: #171006; background: var(--warning); font-size: 20px; font-weight: 900; box-shadow: 0 8px 24px rgba(246,200,108,.16); }
