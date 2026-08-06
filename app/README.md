@@ -20,12 +20,41 @@ Windows additionally needs `wintun.dll`; set `WINTUN_DLL` to its full path and
 the build script will copy it next to `openfortivpn.exe`. The packaged Windows
 application requests administrator privileges through its application manifest.
 
-On Linux and macOS, profiles can use non-interactive `sudo -n`; configure a
-restricted sudoers rule or run `sudo -v` before connecting during development.
+## Profiles and credentials
 
-Passwords are kept in memory for the current application session. Native OS
-keychain persistence is intentionally deferred until the privilege helper is
-implemented.
+Ordinary profile fields are persisted in the operating system's application
+data directory. On Unix systems, the profile file is created with mode `0600`.
+Passwords are never written to `profiles.json`.
+
+The **Save password in system credential store** option stores a password in
+macOS Keychain, Windows Credential Manager or Linux Secret Service. It can be
+disabled for any profile; in that case the password is held in memory and is
+available only for the current application session.
+
+## Startup and automatic connection
+
+The global **Start application at login** setting is available on Linux, macOS
+and Windows. It starts the manager after the user signs in.
+
+Each profile can enable **Connect automatically after application startup**.
+Automatic connection requires that profile's password to be saved in the system
+credential store so that it is available after an application restart. A
+profile without a securely stored password remains disconnected until the user
+provides one.
+
+## Privileges
+
+On Linux and macOS, the manager runs a profile's bundled engine through
+non-interactive `sudo -n` when elevated network privileges are required. A truly
+unattended automatic connection therefore requires a minimal `NOPASSWD` sudoers
+rule that authorizes only the specific bundled `openfortivpn` executable. Do not
+grant passwordless sudo access to arbitrary commands, shells or writable wrapper
+scripts. During development, `sudo -v` can be used to refresh the current sudo
+credential instead.
+
+On Windows, tunnel and route management requires the application to run with
+administrator privileges. Windows may display a UAC prompt, including when an
+automatic connection is requested after application startup.
 
 ## Certificate trust (TOFU)
 
@@ -40,6 +69,11 @@ confirmation, the application saves it as the profile's trusted certificate and
 retries the connection. Cancelling the prompt leaves the profile unchanged and
 does not reconnect. The application never accepts, saves or reconnects with a
 new fingerprint silently.
+
+Automatic connection follows the same TOFU flow. It does not automatically
+accept an unknown self-signed certificate or a certificate whose fingerprint
+has changed; explicit user confirmation is still required before the profile is
+updated and the connection is retried.
 
 TOFU cannot independently prove the identity of a gateway on the first
 connection. When possible, compare the displayed fingerprint with a value

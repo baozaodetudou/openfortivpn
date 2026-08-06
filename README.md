@@ -27,8 +27,23 @@ pnpm tauri dev
 ```
 
 Windows requires `wintun.dll`; set `WINTUN_DLL` to its full path before running
-the Tauri build. See [`app/README.md`](app/README.md) for privilege and password
-storage notes.
+the Tauri build.
+
+Profile settings are persisted in the operating system's application data
+directory. On Unix systems, the profile file is created with mode `0600`.
+Passwords are never written to that file. A user may instead save a password in
+macOS Keychain, Windows Credential Manager or Linux Secret Service; disabling
+that option keeps the password in memory for the current application session
+only.
+
+The manager can start when the user logs in on Linux, macOS and Windows. Each
+profile can also be marked to connect automatically after the application
+starts, provided that its password is available from the system credential
+store. On Linux and macOS, unattended connections that run the bundled engine
+through `sudo -n` require a narrowly scoped `NOPASSWD` sudoers rule for that
+specific bundled `openfortivpn` executable. Never grant passwordless access to
+arbitrary commands. Windows connections require administrator privileges and
+may be subject to UAC. See [`app/README.md`](app/README.md) for details.
 
 When a first connection encounters a self-signed certificate or another
 certificate that the operating system does not trust, the desktop manager uses
@@ -40,6 +55,8 @@ the displayed fingerprint with one supplied by the VPN administrator over a
 separate trusted channel. A fingerprint can also be entered manually, or the
 gateway can use a certificate issued by a trusted CA. See
 [`app/README.md`](app/README.md#certificate-trust-tofu) for the complete flow.
+Automatic connections use the same checks and never accept an unknown or
+changed certificate automatically.
 
 Usage
 -----

@@ -1,8 +1,14 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import {
+    disable as disableAutostart,
+    enable as enableAutostart,
+    isEnabled as isAutostartEnabled,
+  } from "@tauri-apps/plugin-autostart";
   import { onMount } from "svelte";
   import type {
+    AutoConnectError,
     EngineInfo,
     InstanceStatus,
     InstanceView,
@@ -36,6 +42,7 @@
     pppdUsePeerdns: false,
     halfInternetRoutes: false,
     useSudo: true,
+    autoConnect: false,
   });
 
   let profiles = $state<ProfileView[]>([]);
@@ -46,6 +53,7 @@
   let selectedInstanceId = $state("");
   let draft = $state<VpnProfile>(blankProfile());
   let password = $state("");
+  let rememberPassword = $state(false);
   let editing = $state(false);
   let loading = $state(true);
   let busy = $state(false);
@@ -55,6 +63,10 @@
   let tofuQueue = $state<TofuPrompt[]>([]);
   let tofuBusy = $state(false);
   let tofuError = $state("");
+  let launchAtLogin = $state(false);
+  let autostartLoading = $state(true);
+  let autostartBusy = $state(false);
+  let autostartError = $state("");
   const seenCertificateEvents = new Set<string>();
   const pendingCertificates = new Set<string>();
 
@@ -216,6 +228,7 @@
         input: {
           profile: { ...current.profile, trustedCert: prompt.digest },
           password: null,
+          rememberPassword: Boolean(current.passwordStored),
         },
       });
       upsertProfile(saved);
@@ -266,29 +279,43 @@
   function createProfile() {
     draft = blankProfile();
     password = "";
+    rememberPassword = false;
     editing = true;
   }
 
   function editProfile(view: ProfileView) {
-    draft = { ...view.profile };
+    draft = { ...view.profile, autoConnect: view.profile.autoConnect ?? false };
     password = "";
+    rememberPassword = Boolean(view.passwordStored);
     editing = true;
   }
 
   async function saveProfile(event: SubmitEvent) {
     event.preventDefault();
+    const existing = profiles.find((entry) => entry.profile.id === draft.id);
+    const willHaveStoredPassword =
+      rememberPassword && (password.length > 0 || Boolean(existing?.passwordStored));
+    if (draft.autoConnect && !willHaveStoredPassword) {
+      showError(
+        "要启用“应用启动后自动连接”，请输入密码并勾选“保存密码到系统凭据库”，或保留这个配置已有的系统凭据。",
+      );
+      return;
+    }
+
     busy = true;
     try {
       const saved = await invoke<ProfileView>("save_profile", {
         input: {
           profile: { ...draft, port: Number(draft.port) },
           password: password || null,
+          rememberPassword,
         },
       });
       upsertProfile(saved);
       selectedProfileId = saved.profile.id;
       editing = false;
       password = "";
+      rememberPassword = false;
       showSuccess("配置已保存");
     } catch (error) {
       showError(error);
@@ -319,7 +346,7 @@
   async function startProfile(view: ProfileView) {
     if (!view.hasSecret) {
       editProfile(view);
-      showError("请重新输入密码；密码只保留在当前应用会话中");
+      showError("请先输入密码；如需应用重启后仍可连接，请保存到系统凭据库");
       return;
     }
     busy = true;
@@ -372,9 +399,45 @@
     ).length;
   }
 
+  async function refreshAutostart() {
+    autostartLoading = true;
+    autostartError = "";
+    try {
+      launchAtLogin = await isAutostartEnabled();
+    } catch (error) {
+      autostartError = `无法读取登录启动状态：${errorText(error)}`;
+    } finally {
+      autostartLoading = false;
+    }
+  }
+
+  async function toggleAutostart(event: Event) {
+    if (autostartLoading || autostartBusy) return;
+
+    const next = (event.currentTarget as HTMLInputElement).checked;
+    const previous = launchAtLogin;
+    autostartBusy = true;
+    autostartError = "";
+    try {
+      if (next) await enableAutostart();
+      else await disableAutostart();
+
+      launchAtLogin = await isAutostartEnabled();
+      if (launchAtLogin !== next) {
+        throw new Error("系统未能更新登录启动设置");
+      }
+    } catch (error) {
+      launchAtLogin = previous;
+      autostartError = `无法${next ? "启用" : "关闭"}登录时启动：${errorText(error)}`;
+    } finally {
+      autostartBusy = false;
+    }
+  }
+
   onMount(() => {
     const unlisteners: UnlistenFn[] = [];
     void refresh();
+    void refreshAutostart();
     void listen<InstanceView>("vpn-instance-changed", ({ payload }) => {
       upsertInstance(payload);
     }).then((unlisten) => unlisteners.push(unlisten));
@@ -383,6 +446,9 @@
     }).then((unlisten) => unlisteners.push(unlisten));
     void listen<VpnEngineEvent>("vpn-engine-event", ({ payload }) => {
       void handleEngineEvent(payload);
+    }).then((unlisten) => unlisteners.push(unlisten));
+    void listen<AutoConnectError>("vpn-autoconnect-error", ({ payload }) => {
+      showError(`“${payload.profileName}”自动连接失败：${payload.message}`);
     }).then((unlisten) => unlisteners.push(unlisten));
 
     return () => unlisteners.forEach((unlisten) => unlisten());
@@ -445,6 +511,29 @@
       <span>＋</span> 新建配置
     </button>
 
+    <section class="sidebar-settings" aria-labelledby="app-settings-title">
+      <div class="settings-heading">
+        <span id="app-settings-title">应用设置</span>
+        <small>{autostartLoading ? "读取中…" : autostartBusy ? "处理中…" : ""}</small>
+      </div>
+      <label class:disabled={autostartLoading || autostartBusy} class="toggle settings-toggle">
+        <input
+          type="checkbox"
+          checked={launchAtLogin}
+          disabled={autostartLoading || autostartBusy}
+          onchange={toggleAutostart}
+        />
+        <span></span>
+        <b>登录时启动应用</b>
+      </label>
+      {#if autostartError}
+        <p class="settings-error" role="alert">{autostartError}</p>
+      {/if}
+      <p class="settings-note">
+        macOS/Linux 无人值守自动连接需要受限 sudoers，或确保连接过程不依赖交互式 sudo。
+      </p>
+    </section>
+
     <div class="sidebar-footer">
       <span>{engine?.platform ?? "desktop"}</span>
       <span>v0.1.0</span>
@@ -505,7 +594,11 @@
           <div class="panel-heading">
             <div><small>当前配置</small><h2>{selectedProfile.profile.name}</h2></div>
             <span class:ready={selectedProfile.hasSecret} class="secret-state">
-              {selectedProfile.hasSecret ? "密码已载入" : "需要密码"}
+              {selectedProfile.passwordStored
+                ? "密码已存系统凭据库"
+                : selectedProfile.hasSecret
+                  ? "密码仅本次会话"
+                  : "需要密码"}
             </span>
           </div>
           <div class="endpoint">
@@ -520,6 +613,8 @@
             <div><dt>Realm</dt><dd>{selectedProfile.profile.realm || "默认"}</dd></div>
             <div><dt>路由</dt><dd>{selectedProfile.profile.setRoutes ? "启用" : "禁用"}</dd></div>
             <div><dt>DNS</dt><dd>{selectedProfile.profile.setDns ? "启用" : "禁用"}</dd></div>
+            <div><dt>自动连接</dt><dd>{selectedProfile.profile.autoConnect ? "应用启动后" : "关闭"}</dd></div>
+            <div><dt>系统凭据库</dt><dd>{selectedProfile.passwordStored ? "已保存密码" : "未保存"}</dd></div>
           </dl>
           <div class="card-actions">
             <button class="ghost-button" onclick={() => copyConfig(selectedProfile!)}>
@@ -647,13 +742,22 @@
           <input placeholder="可选" bind:value={draft.realm} />
         </label>
         <label class="span-2">
-          <span>密码 <em>仅保留在当前会话</em></span>
+          <span>密码 <em>{rememberPassword ? "系统凭据库" : "仅本次会话"}</em></span>
           <input
             type="password"
             autocomplete="current-password"
-            placeholder={draft.id ? "留空则保持当前会话中的密码" : "输入 VPN 密码"}
+            placeholder={draft.id
+              ? rememberPassword
+                ? "留空则保留已有系统凭据"
+                : "留空则不更新当前会话密码"
+              : "输入 VPN 密码"}
             bind:value={password}
           />
+          <small class="field-help">
+            {rememberPassword
+              ? "密码会写入操作系统安全凭据库；留空会保留已有凭据。"
+              : "不会写入磁盘；取消保存会删除已有系统凭据，已有或本次输入的密码仍可用于当前会话。"}
+          </small>
         </label>
         <label class="span-2">
           <span>受信任证书 SHA-256 <em>可选</em></span>
@@ -676,11 +780,13 @@
           <label class="toggle"><input type="checkbox" bind:checked={draft.pppdUsePeerdns} /><span></span><b>使用 Peer DNS</b></label>
           <label class="toggle"><input type="checkbox" bind:checked={draft.halfInternetRoutes} /><span></span><b>半默认路由</b></label>
           <label class="toggle"><input type="checkbox" bind:checked={draft.useSudo} /><span></span><b>使用 sudo -n</b></label>
+          <label class="toggle"><input type="checkbox" bind:checked={rememberPassword} /><span></span><b>保存密码到系统凭据库</b></label>
+          <label class="toggle"><input type="checkbox" bind:checked={draft.autoConnect} /><span></span><b>应用启动后自动连接</b></label>
         </div>
       </fieldset>
 
       <div class="modal-note">
-        Windows 会继承应用管理员权限；Linux/macOS 的 sudo 模式要求已有凭据缓存或受限 sudoers 规则。
+        自动连接要求密码已保存到系统凭据库。Windows 会继承应用管理员权限；macOS/Linux 无人值守连接需要受限 sudoers，或确保连接不依赖交互式 sudo。
       </div>
       <div class="modal-actions">
         <button type="button" class="secondary-button" disabled={busy} onclick={() => (editing = false)}>取消</button>
@@ -762,6 +868,13 @@
   .active-pulse { width: 7px; height: 7px; margin-left: auto; border-radius: 50%; background: var(--brand); box-shadow: 0 0 10px rgba(94,232,177,.7); }
   .sidebar-empty { padding: 20px 10px; color: var(--muted); font-size: 11px; text-align: center; }
   .add-profile { display: flex; justify-content: center; gap: 8px; align-items: center; width: 100%; margin-top: 14px; padding: 10px 12px; border: 1px dashed var(--line-strong); border-radius: 11px; color: #bbcadc; background: transparent; cursor: pointer; font-size: 11px; font-weight: 700; } .add-profile:hover { border-color: rgba(94,232,177,.45); color: var(--brand); background: var(--brand-soft); }
+  .sidebar-settings { margin-top: 13px; padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.02); }
+  .settings-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; color: var(--muted); font-size: 9px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+  .settings-heading small { color: #71839b; font-size: 8px; letter-spacing: 0; text-transform: none; }
+  .settings-toggle { width: 100%; }
+  .settings-toggle.disabled { cursor: wait; opacity: .58; }
+  .settings-error { margin: 9px 0 0; color: #ffc3cb; font-size: 8px; line-height: 1.45; overflow-wrap: anywhere; }
+  .settings-note { margin: 10px 0 0; padding-top: 9px; border-top: 1px solid var(--line); color: #71839b; font-size: 8px; line-height: 1.5; }
   .sidebar-footer { display: flex; justify-content: space-between; padding: 17px 8px 0; color: #52637c; font-size: 9px; text-transform: uppercase; }
   .content { min-width: 0; padding: 30px 34px 36px; }
   .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; } .topbar p { margin: 0 0 4px; color: var(--brand); font-size: 9px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; } .topbar h1 { margin: 0; font-size: 23px; letter-spacing: -.025em; }

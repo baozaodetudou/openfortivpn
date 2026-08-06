@@ -11,11 +11,13 @@ export type VpnProfile = {
   pppdUsePeerdns: boolean;
   halfInternetRoutes: boolean;
   useSudo: boolean;
+  autoConnect: boolean;
 };
 
 export type ProfileView = {
   profile: VpnProfile;
   hasSecret: boolean;
+  passwordStored: boolean;
 };
 
 export type InstanceStatus =
@@ -65,4 +67,10 @@ export type VpnEngineEvent = {
   instanceId: string;
   profileId: string;
   payload: VpnEnginePayload;
+};
+
+export type AutoConnectError = {
+  profileId: string;
+  profileName: string;
+  message: string;
 };

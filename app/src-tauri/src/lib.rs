@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
@@ -29,6 +29,8 @@ struct VpnProfile {
     pppd_use_peerdns: bool,
     half_internet_routes: bool,
     use_sudo: bool,
+    #[serde(default)]
+    auto_connect: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +38,8 @@ struct VpnProfile {
 struct SaveProfileInput {
     profile: VpnProfile,
     password: Option<String>,
+    #[serde(default)]
+    remember_password: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -43,6 +47,7 @@ struct SaveProfileInput {
 struct ProfileView {
     profile: VpnProfile,
     has_secret: bool,
+    password_stored: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -69,6 +74,7 @@ struct ManagedInstance {
 struct RuntimeStore {
     profiles: BTreeMap<String, VpnProfile>,
     secrets: HashMap<String, String>,
+    stored_secret_profiles: HashSet<String>,
     instances: BTreeMap<String, ManagedInstance>,
 }
 
@@ -103,6 +109,16 @@ struct EngineEvent {
     profile_id: String,
     payload: Value,
 }
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AutoConnectError {
+    profile_id: String,
+    profile_name: String,
+    message: String,
+}
+
+const KEYRING_SERVICE: &str = "com.baozaodetudou.openfortivpn";
 
 fn now_epoch() -> u64 {
     SystemTime::now()
@@ -167,6 +183,32 @@ fn persist_profiles(
     Ok(())
 }
 
+fn credential_entry(profile_id: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYRING_SERVICE, profile_id)
+        .map_err(|error| format!("无法访问系统凭据库：{error}"))
+}
+
+fn read_stored_password(profile_id: &str) -> Result<Option<String>, String> {
+    match credential_entry(profile_id)?.get_password() {
+        Ok(password) => Ok(Some(password)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(format!("无法从系统凭据库读取密码：{error}")),
+    }
+}
+
+fn store_password(profile_id: &str, password: &str) -> Result<(), String> {
+    credential_entry(profile_id)?
+        .set_password(password)
+        .map_err(|error| format!("无法将密码保存到系统凭据库：{error}"))
+}
+
+fn delete_stored_password(profile_id: &str) -> Result<(), String> {
+    match credential_entry(profile_id)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(format!("无法从系统凭据库删除密码：{error}")),
+    }
+}
+
 fn validate_line_value(label: &str, value: &str) -> Result<(), String> {
     if value.contains('\n') || value.contains('\r') {
         return Err(format!("{label} 不能包含换行符"));
@@ -203,10 +245,11 @@ fn validate_profile(profile: &VpnProfile) -> Result<(), String> {
     Ok(())
 }
 
-fn profile_view(profile: &VpnProfile, has_secret: bool) -> ProfileView {
+fn profile_view(profile: &VpnProfile, has_secret: bool, password_stored: bool) -> ProfileView {
     ProfileView {
         profile: profile.clone(),
         has_secret,
+        password_stored,
     }
 }
 
@@ -534,7 +577,13 @@ fn list_profiles(state: State<'_, AppState>) -> Result<Vec<ProfileView>, String>
     Ok(store
         .profiles
         .values()
-        .map(|profile| profile_view(profile, store.secrets.contains_key(&profile.id)))
+        .map(|profile| {
+            profile_view(
+                profile,
+                store.secrets.contains_key(&profile.id),
+                store.stored_secret_profiles.contains(&profile.id),
+            )
+        })
         .collect())
 }
 
@@ -549,21 +598,55 @@ fn save_profile(
     }
     validate_profile(&input.profile)?;
 
+    let password = input.password.filter(|password| !password.is_empty());
+    if let Some(password) = password.as_deref() {
+        validate_line_value("密码", password)?;
+    }
+
+    if input.profile.auto_connect && !input.remember_password {
+        return Err("自动连接需要将密码保存到系统凭据库".to_string());
+    }
+
+    let profile_id = input.profile.id.clone();
+    let was_stored = {
+        let store = lock_store(&state)?;
+        store.stored_secret_profiles.contains(&profile_id)
+    };
+
+    let mut password_from_keyring = None;
+    if input.remember_password {
+        if let Some(password) = password.as_deref() {
+            store_password(&profile_id, password)?;
+        } else if was_stored {
+            // An empty password while editing means keep the existing credential.
+        } else {
+            password_from_keyring = read_stored_password(&profile_id)?;
+            if password_from_keyring.is_none() {
+                return Err("请先输入密码，再保存到系统凭据库".to_string());
+            }
+        }
+    } else if was_stored {
+        delete_stored_password(&profile_id)?;
+    }
+
     let view = {
         let mut store = lock_store(&state)?;
-        if let Some(password) = input.password {
-            if !password.is_empty() {
-                validate_line_value("密码", &password)?;
-                store.secrets.insert(input.profile.id.clone(), password);
-            }
+        if let Some(password) = password.or(password_from_keyring) {
+            store.secrets.insert(profile_id.clone(), password);
+        }
+        if input.remember_password {
+            store.stored_secret_profiles.insert(profile_id.clone());
+        } else {
+            store.stored_secret_profiles.remove(&profile_id);
         }
         store
             .profiles
-            .insert(input.profile.id.clone(), input.profile.clone());
+            .insert(profile_id.clone(), input.profile.clone());
         persist_profiles(&app, &store.profiles)?;
         profile_view(
             &input.profile,
-            store.secrets.contains_key(&input.profile.id),
+            store.secrets.contains_key(&profile_id),
+            store.stored_secret_profiles.contains(&profile_id),
         )
     };
 
@@ -576,20 +659,29 @@ fn delete_profile(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<(), String> {
-    let mut store = lock_store(&state)?;
-    let is_active = store.instances.values().any(|instance| {
-        instance.view.profile_id == profile_id
-            && matches!(
-                instance.view.status.as_str(),
-                "starting" | "connecting" | "connected" | "disconnecting"
-            )
-    });
-    if is_active {
-        return Err("该配置仍有运行中的连接，请先断开".to_string());
+    let was_stored = {
+        let store = lock_store(&state)?;
+        let is_active = store.instances.values().any(|instance| {
+            instance.view.profile_id == profile_id
+                && matches!(
+                    instance.view.status.as_str(),
+                    "starting" | "connecting" | "connected" | "disconnecting"
+                )
+        });
+        if is_active {
+            return Err("该配置仍有运行中的连接，请先断开".to_string());
+        }
+        store.stored_secret_profiles.contains(&profile_id)
+    };
+
+    if was_stored {
+        delete_stored_password(&profile_id)?;
     }
 
+    let mut store = lock_store(&state)?;
     store.profiles.remove(&profile_id);
     store.secrets.remove(&profile_id);
+    store.stored_secret_profiles.remove(&profile_id);
     persist_profiles(&app, &store.profiles)
 }
 
@@ -630,14 +722,13 @@ fn engine_info(app: AppHandle) -> EngineInfo {
     }
 }
 
-#[tauri::command]
-fn start_profile(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    profile_id: String,
-) -> Result<InstanceView, String> {
+fn start_profile_impl(app: AppHandle, profile_id: String) -> Result<InstanceView, String> {
     let (profile, password) = {
-        let store = lock_store(&state)?;
+        let state = app.state::<AppState>();
+        let store = state
+            .store
+            .lock()
+            .map_err(|_| "内部运行状态已损坏".to_string())?;
         let profile = store
             .profiles
             .get(&profile_id)
@@ -698,7 +789,11 @@ fn start_profile(
     };
 
     {
-        let mut store = lock_store(&state)?;
+        let state = app.state::<AppState>();
+        let mut store = state
+            .store
+            .lock()
+            .map_err(|_| "内部运行状态已损坏".to_string())?;
         store.instances.insert(
             instance_id.clone(),
             ManagedInstance {
@@ -718,6 +813,11 @@ fn start_profile(
     emit_instance(&app, &view);
 
     Ok(view)
+}
+
+#[tauri::command]
+fn start_profile(app: AppHandle, profile_id: String) -> Result<InstanceView, String> {
+    start_profile_impl(app, profile_id)
 }
 
 #[tauri::command]
@@ -781,17 +881,89 @@ fn export_profile_config(state: State<'_, AppState>, profile_id: String) -> Resu
     render_runtime_config(profile, "", "openfortivpn")
 }
 
+fn start_auto_connect_profiles(app: AppHandle, credential_errors: Vec<AutoConnectError>) {
+    thread::spawn(move || {
+        // Give the webview time to register event listeners before reporting startup failures.
+        thread::sleep(Duration::from_millis(900));
+
+        let credential_error_profiles = credential_errors
+            .iter()
+            .map(|error| error.profile_id.clone())
+            .collect::<HashSet<_>>();
+        for error in credential_errors {
+            let _ = app.emit("vpn-autoconnect-error", error);
+        }
+
+        let profiles = {
+            let state = app.state::<AppState>();
+            let Ok(store) = state.store.lock() else {
+                return;
+            };
+            store
+                .profiles
+                .values()
+                .filter(|profile| {
+                    profile.auto_connect && !credential_error_profiles.contains(&profile.id)
+                })
+                .map(|profile| (profile.id.clone(), profile.name.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        for (profile_id, profile_name) in profiles {
+            if let Err(message) = start_profile_impl(app.clone(), profile_id.clone()) {
+                let _ = app.emit(
+                    "vpn-autoconnect-error",
+                    AutoConnectError {
+                        profile_id,
+                        profile_name,
+                        message,
+                    },
+                );
+            }
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
         .setup(|app| {
             let profiles = load_profiles(app.handle()).unwrap_or_default();
+            let mut secrets = HashMap::new();
+            let mut stored_secret_profiles = HashSet::new();
+            let mut credential_errors = Vec::new();
+
+            for profile in profiles.values() {
+                match read_stored_password(&profile.id) {
+                    Ok(Some(password)) => {
+                        secrets.insert(profile.id.clone(), password);
+                        stored_secret_profiles.insert(profile.id.clone());
+                    }
+                    Ok(None) => {}
+                    Err(message) if profile.auto_connect => {
+                        credential_errors.push(AutoConnectError {
+                            profile_id: profile.id.clone(),
+                            profile_name: profile.name.clone(),
+                            message,
+                        });
+                    }
+                    Err(_) => {}
+                }
+            }
+
             let state = app.state::<AppState>();
             if let Ok(mut store) = state.store.lock() {
                 store.profiles = profiles;
+                store.secrets = secrets;
+                store.stored_secret_profiles = stored_secret_profiles;
             }
+            start_auto_connect_profiles(app.handle().clone(), credential_errors);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -828,7 +1000,22 @@ mod tests {
             pppd_use_peerdns: false,
             half_internet_routes: false,
             use_sudo: true,
+            auto_connect: false,
         }
+    }
+
+    #[test]
+    fn loads_legacy_profiles_with_auto_connect_disabled() {
+        let mut value = serde_json::to_value(valid_profile()).expect("profile should serialize");
+        value
+            .as_object_mut()
+            .expect("profile should be an object")
+            .remove("autoConnect");
+
+        let profile: VpnProfile =
+            serde_json::from_value(value).expect("legacy profile should deserialize");
+
+        assert!(!profile.auto_connect);
     }
 
     #[test]
