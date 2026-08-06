@@ -8,8 +8,20 @@
     InstanceView,
     LogEvent,
     ProfileView,
+    VpnEngineEvent,
     VpnProfile,
   } from "$lib/types";
+
+  type TofuPrompt = {
+    key: string;
+    instanceId: string;
+    profileId: string;
+    profileName: string;
+    host: string;
+    port: number;
+    digest: string;
+    reason: string;
+  };
 
   const blankProfile = (): VpnProfile => ({
     id: "",
@@ -39,6 +51,12 @@
   let busy = $state(false);
   let errorMessage = $state("");
   let successMessage = $state("");
+  let tofuPrompt = $state<TofuPrompt | null>(null);
+  let tofuQueue = $state<TofuPrompt[]>([]);
+  let tofuBusy = $state(false);
+  let tofuError = $state("");
+  const seenCertificateEvents = new Set<string>();
+  const pendingCertificates = new Set<string>();
 
   let selectedProfile = $derived(
     profiles.find((entry) => entry.profile.id === selectedProfileId) ?? null,
@@ -104,6 +122,117 @@
     );
     if (!selectedInstanceId && view.profileId === selectedProfileId) {
       selectedInstanceId = view.id;
+    }
+  }
+
+  function errorText(error: unknown) {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  function formatFingerprint(digest: string) {
+    return digest
+      .toUpperCase()
+      .match(/.{1,2}/g)
+      ?.join(":") ?? digest.toUpperCase();
+  }
+
+  function closeTofuPrompt() {
+    if (tofuPrompt) pendingCertificates.delete(tofuPrompt.key);
+    const [next, ...remaining] = tofuQueue;
+    tofuQueue = remaining;
+    tofuPrompt = next ?? null;
+    tofuError = "";
+  }
+
+  function enqueueTofuPrompt(prompt: TofuPrompt) {
+    if (pendingCertificates.has(prompt.key)) return;
+    pendingCertificates.add(prompt.key);
+    if (tofuPrompt) tofuQueue = [...tofuQueue, prompt];
+    else tofuPrompt = prompt;
+  }
+
+  async function handleEngineEvent(event: VpnEngineEvent) {
+    const { payload, instanceId } = event;
+    const digest =
+      typeof payload.digest === "string" ? payload.digest.toLowerCase() : "";
+    if (payload.event !== "cert_error" || !/^[0-9a-f]{64}$/.test(digest)) {
+      return;
+    }
+
+    const eventKey = `${instanceId}:${digest}`;
+    if (seenCertificateEvents.has(eventKey)) return;
+    seenCertificateEvents.add(eventKey);
+
+    let profileId = event.profileId;
+    if (!profileId) {
+      let instance = instances.find((entry) => entry.id === instanceId);
+      try {
+        if (!instance) {
+          const latestInstances = await invoke<InstanceView[]>("list_instances");
+          latestInstances.forEach(upsertInstance);
+          instance = latestInstances.find((entry) => entry.id === instanceId);
+        }
+        profileId = instance?.profileId ?? "";
+      } catch (error) {
+        showError(error);
+        return;
+      }
+    }
+
+    const profile = profiles.find(
+      (entry) => entry.profile.id === profileId,
+    );
+    if (!profile) {
+      showError("收到服务器证书，但无法找到对应的 VPN 配置");
+      return;
+    }
+
+    enqueueTofuPrompt({
+      key: `${profile.profile.id}:${digest}`,
+      instanceId,
+      profileId: profile.profile.id,
+      profileName: profile.profile.name,
+      host: profile.profile.host,
+      port: profile.profile.port,
+      digest,
+      reason: typeof payload.reason === "string" ? payload.reason : "",
+    });
+  }
+
+  async function trustCertificateAndReconnect() {
+    const prompt = tofuPrompt;
+    if (!prompt || tofuBusy || busy) return;
+
+    tofuBusy = true;
+    busy = true;
+    tofuError = "";
+    try {
+      const current = profiles.find(
+        (entry) => entry.profile.id === prompt.profileId,
+      );
+      if (!current) throw new Error("对应的 VPN 配置已不存在");
+
+      const saved = await invoke<ProfileView>("save_profile", {
+        input: {
+          profile: { ...current.profile, trustedCert: prompt.digest },
+          password: null,
+        },
+      });
+      upsertProfile(saved);
+
+      const instance = await invoke<InstanceView>("start_profile", {
+        profileId: prompt.profileId,
+      });
+      upsertInstance(instance);
+      selectedProfileId = prompt.profileId;
+      selectedInstanceId = instance.id;
+      closeTofuPrompt();
+      showSuccess("已信任服务器证书并重新连接");
+    } catch (error) {
+      tofuError = errorText(error);
+    } finally {
+      tofuBusy = false;
+      busy = false;
     }
   }
 
@@ -251,6 +380,9 @@
     }).then((unlisten) => unlisteners.push(unlisten));
     void listen<LogEvent>("vpn-log", ({ payload }) => {
       logs = [...logs.slice(-399), payload];
+    }).then((unlisten) => unlisteners.push(unlisten));
+    void listen<VpnEngineEvent>("vpn-engine-event", ({ payload }) => {
+      void handleEngineEvent(payload);
     }).then((unlisten) => unlisteners.push(unlisten));
 
     return () => unlisteners.forEach((unlisten) => unlisten());
@@ -530,6 +662,9 @@
             placeholder="64 位十六进制证书摘要"
             bind:value={draft.trustedCert}
           />
+          <small class="field-help">
+            首次连接遇到自签名证书时，应用会显示服务器指纹供你确认；也可以在核对后手动填写。
+          </small>
         </label>
       </div>
 
@@ -552,6 +687,58 @@
         <button type="submit" class="primary-button" disabled={busy}>{busy ? "保存中…" : "保存配置"}</button>
       </div>
     </form>
+  </div>
+{/if}
+
+{#if tofuPrompt}
+  <div class="modal-backdrop tofu-backdrop" role="presentation">
+    <div
+      class="tofu-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="tofu-title"
+      aria-describedby="tofu-description"
+    >
+      <div class="tofu-icon" aria-hidden="true">!</div>
+      <div class="tofu-heading">
+        <small>首次使用信任（TOFU）</small>
+        <h2 id="tofu-title">确认服务器证书</h2>
+      </div>
+
+      <p id="tofu-description" class="tofu-description">
+        <b>{tofuPrompt.profileName}</b> 返回了系统尚未信任的证书。请确认这是你准备连接的服务器，并通过管理员提供的渠道核对指纹。
+      </p>
+
+      <dl class="tofu-server">
+        <div><dt>服务器</dt><dd>{tofuPrompt.host}:{tofuPrompt.port}</dd></div>
+        <div><dt>SHA-256 指纹</dt><dd>{formatFingerprint(tofuPrompt.digest)}</dd></div>
+      </dl>
+
+      <div class="tofu-warning">
+        信任后，应用会保存此指纹并立即重连；以后证书发生变化时会再次阻止连接。若无法独立核对指纹，取消最安全，因为当前网络可能被冒充或拦截。
+      </div>
+      {#if tofuPrompt.reason}
+        <p class="tofu-reason">引擎信息：{tofuPrompt.reason}</p>
+      {/if}
+      {#if tofuError}
+        <div class="tofu-error" role="alert">{tofuError}</div>
+      {/if}
+
+      <div class="modal-actions">
+        <button
+          type="button"
+          class="secondary-button"
+          disabled={tofuBusy || busy}
+          onclick={closeTofuPrompt}
+        >取消</button>
+        <button
+          type="button"
+          class="primary-button"
+          disabled={tofuBusy || busy}
+          onclick={trustCertificateAndReconnect}
+        >{tofuBusy ? "正在保存并重连…" : "信任并重连"}</button>
+      </div>
+    </div>
   </div>
 {/if}
 
@@ -611,9 +798,25 @@
   .modal-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; } .modal-heading small { color: var(--brand); font-size: 9px; font-weight: 800; letter-spacing: .14em; } .modal-heading h2 { margin: 4px 0 0; font-size: 19px; } .modal-heading button { width: 32px; height: 32px; border-radius: 9px; color: var(--muted); background: var(--panel-soft); cursor: pointer; font-size: 18px; }
   .form-grid { display: grid; grid-template-columns: 1fr 150px; gap: 13px; } .form-grid .span-2 { grid-column: span 2; } .form-grid label > span { display: block; margin: 0 0 6px 2px; color: #b8c4d5; font-size: 10px; font-weight: 650; } .form-grid em { margin-left: 6px; color: var(--muted); font-size: 8px; font-style: normal; font-weight: 500; }
   .form-grid input { width: 100%; padding: 10px 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: rgba(3,10,18,.56); font-size: 11px; transition: border-color .15s; } .form-grid input:focus { border-color: rgba(94,232,177,.45); } .form-grid input::placeholder { color: #4f6077; }
+  .field-help { display: block; margin: 7px 2px 0; color: #71839b; font-size: 9px; line-height: 1.55; }
   fieldset { margin: 18px 0 0; padding: 13px; border: 1px solid var(--line); border-radius: 11px; } legend { padding: 0 7px; color: var(--muted); font-size: 9px; font-weight: 700; text-transform: uppercase; }
   .toggle-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; } .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; } .toggle input { position: absolute; opacity: 0; pointer-events: none; } .toggle span { position: relative; width: 28px; height: 16px; flex: 0 0 auto; border-radius: 999px; background: #28374b; transition: .18s; } .toggle span::after { position: absolute; top: 3px; left: 3px; width: 10px; height: 10px; border-radius: 50%; background: #8695aa; content: ""; transition: .18s; } .toggle input:checked + span { background: rgba(94,232,177,.28); } .toggle input:checked + span::after { left: 15px; background: var(--brand); } .toggle b { color: #acb9ca; font-size: 9px; font-weight: 650; }
   .modal-note { margin-top: 14px; padding: 10px 11px; border-radius: 9px; color: #8292a9; background: rgba(112,167,255,.055); font-size: 9px; line-height: 1.55; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; }
+  .tofu-backdrop { z-index: 40; }
+  .tofu-modal { width: min(560px, 94vw); padding: 25px; border: 1px solid rgba(246,200,108,.32); border-radius: 17px; background: #0c1727; box-shadow: 0 30px 90px rgba(0,0,0,.55); }
+  .tofu-icon { display: grid; width: 42px; height: 42px; place-items: center; margin-bottom: 16px; border-radius: 13px; color: #171006; background: var(--warning); font-size: 20px; font-weight: 900; box-shadow: 0 8px 24px rgba(246,200,108,.16); }
+  .tofu-heading small { color: var(--warning); font-size: 9px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+  .tofu-heading h2 { margin: 5px 0 0; font-size: 20px; }
+  .tofu-description { margin: 16px 0; color: #aebdd0; font-size: 11px; line-height: 1.7; }
+  .tofu-description b { color: var(--text); }
+  .tofu-server { margin: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: rgba(3,10,18,.5); }
+  .tofu-server div { display: grid; grid-template-columns: 105px minmax(0,1fr); gap: 12px; padding: 12px 13px; }
+  .tofu-server div + div { border-top: 1px solid var(--line); }
+  .tofu-server dt { color: var(--muted); font-size: 9px; }
+  .tofu-server dd { overflow-wrap: anywhere; margin: 0; color: #d7e1ed; font: 10px/1.6 "SFMono-Regular", Consolas, monospace; }
+  .tofu-warning { margin-top: 14px; padding: 11px 12px; border: 1px solid rgba(246,200,108,.17); border-radius: 9px; color: #c8b98f; background: rgba(246,200,108,.06); font-size: 9px; line-height: 1.65; }
+  .tofu-reason { margin: 10px 2px 0; color: #71839b; font-size: 9px; line-height: 1.5; }
+  .tofu-error { margin-top: 12px; padding: 10px 11px; border: 1px solid rgba(255,124,141,.24); border-radius: 9px; color: #ffc3cb; background: rgba(255,124,141,.08); font-size: 10px; line-height: 1.5; }
   @media (max-width: 1000px) { .app-shell { grid-template-columns: 238px minmax(0,1fr); } .content { padding: 26px 24px; } .overview-grid { grid-template-columns: 1fr; } .toggle-grid { grid-template-columns: repeat(2, 1fr); } }
 </style>

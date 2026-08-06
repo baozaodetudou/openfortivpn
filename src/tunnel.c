@@ -27,6 +27,7 @@
  */
 
 #include "tunnel.h"
+#include "event.h"
 #include "http.h"
 #include "log.h"
 #include "userinput.h"
@@ -906,6 +907,9 @@ static int ssl_verify_cert(struct tunnel *tunnel)
 		ret = 0;
 		goto free_cert;
 	}
+
+	/* Allow GUI clients to offer an explicit trust-on-first-use flow. */
+	event_emit_cert_error(digest_str, "verification_failed");
 
 	subj = X509_get_subject_name(cert);
 

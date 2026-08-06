@@ -30,6 +30,17 @@ Windows requires `wintun.dll`; set `WINTUN_DLL` to its full path before running
 the Tauri build. See [`app/README.md`](app/README.md) for privilege and password
 storage notes.
 
+When a first connection encounters a self-signed certificate or another
+certificate that the operating system does not trust, the desktop manager uses
+the engine's `cert_error` event to display the certificate's SHA-256 fingerprint.
+This is a trust-on-first-use (TOFU) prompt: the fingerprint is saved to the
+profile and the connection is retried only after the user explicitly confirms
+it. The application never silently trusts a certificate. When possible, compare
+the displayed fingerprint with one supplied by the VPN administrator over a
+separate trusted channel. A fingerprint can also be entered manually, or the
+gateway can use a certificate issued by a trusted CA. See
+[`app/README.md`](app/README.md#certificate-trust-tofu) for the complete flow.
+
 Usage
 -----
 

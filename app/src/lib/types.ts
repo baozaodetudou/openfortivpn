@@ -53,3 +53,16 @@ export type LogEvent = {
   line: string;
   timestamp: number;
 };
+
+export type VpnEnginePayload = {
+  event: string;
+  digest?: string;
+  reason?: string;
+  [key: string]: unknown;
+};
+
+export type VpnEngineEvent = {
+  instanceId: string;
+  profileId: string;
+  payload: VpnEnginePayload;
+};

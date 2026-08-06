@@ -100,6 +100,7 @@ struct LogEvent {
 #[serde(rename_all = "camelCase")]
 struct EngineEvent {
     instance_id: String,
+    profile_id: String,
     payload: Value,
 }
 
@@ -410,10 +411,24 @@ fn handle_engine_event(app: &AppHandle, instance_id: &str, payload: &Value) {
         _ => {}
     }
 
+    let profile_id = app
+        .state::<AppState>()
+        .store
+        .lock()
+        .ok()
+        .and_then(|store| {
+            store
+                .instances
+                .get(instance_id)
+                .map(|instance| instance.view.profile_id.clone())
+        })
+        .unwrap_or_default();
+
     let _ = app.emit(
         "vpn-engine-event",
         EngineEvent {
             instance_id: instance_id.to_string(),
+            profile_id,
             payload: payload.clone(),
         },
     );
@@ -992,5 +1007,22 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.starts_with("ofv-OfficeVPN-"));
         assert!(second.starts_with("ofv-OfficeVPN-"));
+    }
+
+    #[test]
+    fn engine_event_includes_profile_mapping_for_fast_process_events() {
+        let event = EngineEvent {
+            instance_id: "instance-1".to_string(),
+            profile_id: "profile-1".to_string(),
+            payload: serde_json::json!({
+                "event": "cert_error",
+                "digest": "a".repeat(64),
+            }),
+        };
+
+        let value = serde_json::to_value(event).expect("engine event should serialize");
+        assert_eq!(value["instanceId"], "instance-1");
+        assert_eq!(value["profileId"], "profile-1");
+        assert_eq!(value["payload"]["event"], "cert_error");
     }
 }
