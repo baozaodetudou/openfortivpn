@@ -100,8 +100,10 @@ int ipv4_del_nameservers_from_resolv_conf(struct tunnel *tunnel);
 
 #ifdef _WIN32
 #include <ifdef.h>
-void ipv4_win_set_tun_luid(NET_LUID *luid);
+void ipv4_win_set_tun_luid(const NET_LUID *luid);
+void ipv4_win_clear_tun_luid(void);
 void ipv4_apply_deferred_routes(void);
+const char *ipv4_win_adapter_name(struct tunnel *tunnel);
 #endif
 
 #endif

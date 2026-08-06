@@ -1,0 +1,44 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OpenFortiVPN Manager",
+  "version": "0.1.0",
+  "identifier": "com.baozaodetudou.openfortivpn",
+  "build": {
+    "beforeDevCommand": "npm run desktop:dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run desktop:build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "OpenFortiVPN Manager",
+        "width": 1180,
+        "height": 780,
+        "minWidth": 920,
+        "minHeight": 640,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "resources": {
+      "resources/bin/": "bin/"
+    },
+    "category": "Utility",
+    "shortDescription": "Manage multiple OpenFortiVPN profiles and connections",
+    "longDescription": "A cross-platform desktop manager for OpenFortiVPN profiles, processes, logs, routes and DNS settings.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

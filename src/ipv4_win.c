@@ -29,7 +29,9 @@
 #include <iphlpapi.h>
 #include <netioapi.h>
 
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #pragma comment(lib, "iphlpapi.lib")
@@ -44,14 +46,61 @@ struct win_route {
 };
 
 static struct win_route saved_default_route;
-static struct win_route vpn_gateway_route;
 static NET_LUID tun_luid;
 static int tun_luid_valid;
 
-void ipv4_win_set_tun_luid(NET_LUID *luid)
+#define WIN_ADAPTER_NAME_MAX 127
+
+/*
+ * Return a safe, per-instance adapter name. The Windows implementation is
+ * launched with elevated privileges, so never pass an arbitrary config value
+ * to a shell command. The GUI uses pppd-ifname as the adapter name on
+ * Windows; the option keeps its existing meaning on POSIX platforms.
+ */
+const char *ipv4_win_adapter_name(struct tunnel *tunnel)
+{
+	const char *name;
+	size_t length = 0;
+
+	if (tunnel == NULL || tunnel->config == NULL)
+		return NULL;
+
+	name = tunnel->config->pppd_ifname;
+
+	if (name == NULL || name[0] == '\0')
+		return "openfortivpn";
+
+	for (const char *p = name; *p != '\0'; p++) {
+		unsigned char c = (unsigned char)*p;
+
+		if (!(('a' <= c && c <= 'z') ||
+		      ('A' <= c && c <= 'Z') ||
+		      ('0' <= c && c <= '9') ||
+		      c == '-' || c == '_')) {
+			log_error("Invalid Windows adapter name '%s': use only ASCII letters, digits, '-' and '_'.\n",
+			          name);
+			return NULL;
+		}
+		if (++length > WIN_ADAPTER_NAME_MAX) {
+			log_error("Invalid Windows adapter name: maximum length is %d characters.\n",
+			          WIN_ADAPTER_NAME_MAX);
+			return NULL;
+		}
+	}
+
+	return name;
+}
+
+void ipv4_win_set_tun_luid(const NET_LUID *luid)
 {
 	tun_luid = *luid;
 	tun_luid_valid = 1;
+}
+
+void ipv4_win_clear_tun_luid(void)
+{
+	memset(&tun_luid, 0, sizeof(tun_luid));
+	tun_luid_valid = 0;
 }
 
 /*
@@ -79,11 +128,14 @@ static int get_best_route(struct in_addr dest, MIB_IPFORWARD_ROW2 *route)
  * Add a route using the IP Helper API.
  */
 static int add_route(struct in_addr dest, struct in_addr mask,
-                     struct in_addr gateway, NET_LUID *luid,
-                     ULONG metric)
+                     struct in_addr gateway, const NET_LUID *luid,
+                     ULONG metric, int *created)
 {
 	MIB_IPFORWARD_ROW2 row;
 	DWORD ret;
+
+	if (created != NULL)
+		*created = 0;
 
 	InitializeIpForwardEntry(&row);
 
@@ -108,10 +160,14 @@ static int add_route(struct in_addr dest, struct in_addr mask,
 	row.Protocol = MIB_IPPROTO_NETMGMT;
 
 	ret = CreateIpForwardEntry2(&row);
-	if (ret != NO_ERROR && ret != ERROR_OBJECT_ALREADY_EXISTS) {
+	if (ret == ERROR_OBJECT_ALREADY_EXISTS)
+		return 0;
+	if (ret != NO_ERROR) {
 		log_error("CreateIpForwardEntry2 failed: %lu\n", ret);
 		return -1;
 	}
+	if (created != NULL)
+		*created = 1;
 	return 0;
 }
 
@@ -216,15 +272,18 @@ int ipv4_set_tunnel_routes(struct tunnel *tunnel)
 	 */
 	if (saved_default_route.valid) {
 		struct in_addr saved_gw;
+		int route_created;
 
 		saved_gw = saved_default_route.row.NextHop.Ipv4.sin_addr;
-		ret = add_route(gateway_ip, full_mask, saved_gw, NULL, 0);
+		ret = add_route(gateway_ip, full_mask, saved_gw,
+		                &saved_default_route.row.InterfaceLuid, 0,
+		                &route_created);
 		if (ret) {
 			log_warn("Could not add route to VPN gateway.\n");
 			if (tunnel->ipv4.split_routes == 0)
 				return ret;
 			/* Split tunnel: continue without gateway route */
-		} else {
+		} else if (route_created) {
 			tunnel->ipv4.route_to_vpn_is_added = 1;
 		}
 	}
@@ -240,7 +299,7 @@ int ipv4_set_tunnel_routes(struct tunnel *tunnel)
 			struct rtentry *rt = &tunnel->ipv4.split_rt[i];
 
 			ret = add_route(route_dest(rt), route_mask(rt),
-			                route_gtw(rt), &tun_luid, 0);
+			                route_gtw(rt), &tun_luid, 0, NULL);
 			if (ret)
 				log_warn("Failed to add split route %d\n", i);
 		}
@@ -256,13 +315,13 @@ int ipv4_set_tunnel_routes(struct tunnel *tunnel)
 
 		/* 0.0.0.0/1 via TUN */
 		ret = add_route(half1, half_mask, tunnel->ipv4.ip_addr,
-		                &tun_luid, 5);
+		                &tun_luid, 5, NULL);
 		if (ret)
 			return ret;
 
 		/* 128.0.0.0/1 via TUN */
 		ret = add_route(half2, half_mask, tunnel->ipv4.ip_addr,
-		                &tun_luid, 5);
+		                &tun_luid, 5, NULL);
 		if (ret)
 			return ret;
 	} else {
@@ -272,7 +331,7 @@ int ipv4_set_tunnel_routes(struct tunnel *tunnel)
 
 		/* Replace default route with one through VPN */
 		ret = add_route(any, zero_mask, tunnel->ipv4.ip_addr,
-		                &tun_luid, 5);
+		                &tun_luid, 5, NULL);
 		if (ret)
 			return ret;
 	}
@@ -282,21 +341,38 @@ int ipv4_set_tunnel_routes(struct tunnel *tunnel)
 
 int ipv4_restore_routes(struct tunnel *tunnel)
 {
-	struct in_addr any, full_mask, half_mask;
 	int ret = 0;
 
-	any.s_addr = 0;
-	full_mask.s_addr = htonl(0xFFFFFFFF);
-	half_mask.s_addr = htonl(0x80000000);
-
-	/* Remove VPN default routes */
+	/* Remove only routes that target this instance's adapter LUID. */
 	if (tun_luid_valid) {
 		MIB_IPFORWARD_ROW2 row;
 
-		InitializeIpForwardEntry(&row);
-		row.InterfaceLuid = tun_luid;
+		if (tunnel->ipv4.split_routes > 0) {
+			for (int i = 0; i < tunnel->ipv4.split_routes; i++) {
+				struct rtentry *rt = &tunnel->ipv4.split_rt[i];
+				uint32_t mask = ntohl(route_mask(rt).s_addr);
+				uint8_t prefix_len = 0;
 
-		if (tunnel->config->half_internet_routes) {
+				while (mask & 0x80000000) {
+					prefix_len++;
+					mask <<= 1;
+				}
+
+				InitializeIpForwardEntry(&row);
+				row.InterfaceLuid = tun_luid;
+				row.DestinationPrefix.Prefix.Ipv4.sin_family =
+				        AF_INET;
+				row.DestinationPrefix.Prefix.Ipv4.sin_addr =
+				        route_dest(rt);
+				row.DestinationPrefix.PrefixLength = prefix_len;
+				row.NextHop.Ipv4.sin_family = AF_INET;
+				row.NextHop.Ipv4.sin_addr = route_gtw(rt);
+				del_route(&row);
+			}
+		} else if (tunnel->config->half_internet_routes) {
+			InitializeIpForwardEntry(&row);
+			row.InterfaceLuid = tun_luid;
+
 			/* Delete 0.0.0.0/1 route */
 			row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
 			row.DestinationPrefix.Prefix.Ipv4.sin_addr.s_addr = 0;
@@ -310,6 +386,9 @@ int ipv4_restore_routes(struct tunnel *tunnel)
 			        htonl(0x80000000);
 			del_route(&row);
 		} else {
+			InitializeIpForwardEntry(&row);
+			row.InterfaceLuid = tun_luid;
+
 			/* Delete default route through VPN */
 			row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
 			row.DestinationPrefix.Prefix.Ipv4.sin_addr.s_addr = 0;
@@ -348,6 +427,10 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 	char cmd[512];
 	char dns1_str[INET_ADDRSTRLEN] = "";
 	char dns2_str[INET_ADDRSTRLEN] = "";
+	const char *adapter_name = ipv4_win_adapter_name(tunnel);
+
+	if (adapter_name == NULL)
+		return -1;
 
 	if (!tun_luid_valid) {
 		log_error("TUN adapter LUID not set, cannot configure DNS.\n");
@@ -369,32 +452,33 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 	 */
 	if (dns1_str[0]) {
 		snprintf(cmd, sizeof(cmd),
-		         "netsh interface ipv4 set dnsservers name=\"openfortivpn\" static %s primary validate=no",
-		         dns1_str);
+		         "netsh interface ipv4 set dnsservers name=\"%s\" static %s primary validate=no",
+		         adapter_name, dns1_str);
 		log_debug("Running: %s\n", cmd);
 		system(cmd);
 	}
 
 	if (dns2_str[0]) {
 		snprintf(cmd, sizeof(cmd),
-		         "netsh interface ipv4 add dnsservers name=\"openfortivpn\" %s index=2 validate=no",
-		         dns2_str);
+		         "netsh interface ipv4 add dnsservers name=\"%s\" %s index=2 validate=no",
+		         adapter_name, dns2_str);
 		log_debug("Running: %s\n", cmd);
 		system(cmd);
 	}
 
-	/* Set DNS search suffix if configured */
+	/*
+	 * netsh cannot safely set a connection-specific DNS suffix. Do not put
+	 * the gateway-provided suffix into a shell command; that would turn
+	 * untrusted server data into command-line input.
+	 */
 	if (tunnel->ipv4.dns_suffix) {
-		snprintf(cmd, sizeof(cmd),
-		         "netsh interface ipv4 set dnsservers name=\"openfortivpn\" register=both suffix=\"%s\" validate=no",
-		         tunnel->ipv4.dns_suffix);
-		log_debug("Running: %s\n", cmd);
-		/* DNS suffix is set via registry for reliability */
+		log_warn("Connection-specific DNS suffix configuration is not supported on Windows.\n");
 	}
 
 	/* Lower the interface metric so VPN DNS is preferred */
 	snprintf(cmd, sizeof(cmd),
-	         "netsh interface ipv4 set interface \"openfortivpn\" metric=1");
+	         "netsh interface ipv4 set interface \"%s\" metric=1",
+	         adapter_name);
 	log_debug("Running: %s\n", cmd);
 	system(cmd);
 
@@ -404,8 +488,10 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 int ipv4_del_nameservers_from_resolv_conf(struct tunnel *tunnel)
 {
 	char cmd[256];
+	const char *adapter_name = ipv4_win_adapter_name(tunnel);
 
-	(void)tunnel;
+	if (adapter_name == NULL)
+		return -1;
 
 	/*
 	 * Reset DNS on the TUN interface. When the adapter is destroyed,
@@ -413,7 +499,8 @@ int ipv4_del_nameservers_from_resolv_conf(struct tunnel *tunnel)
 	 * for clean shutdown.
 	 */
 	snprintf(cmd, sizeof(cmd),
-	         "netsh interface ipv4 set dnsservers name=\"openfortivpn\" dhcp");
+	         "netsh interface ipv4 set dnsservers name=\"%s\" dhcp",
+	         adapter_name);
 	log_debug("Running: %s\n", cmd);
 	system(cmd);
 

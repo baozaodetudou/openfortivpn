@@ -213,7 +213,6 @@ else()
         HAVE_USR_SBIN_PPPD=${HAVE_USR_SBIN_PPPD}
         HAVE_USR_SBIN_PPP=${HAVE_USR_SBIN_PPP}
         HAVE_PROC_NET_ROUTE=${HAVE_PROC_NET_ROUTE}
-        HAVE_RT_ENTRY_WITH_RT_DST=$<BOOL:${HAVE_RT_ENTRY_WITH_RT_DST}>
         HAVE_RESOLVCONF=${HAVE_RESOLVCONF}
         USE_RESOLVCONF=${USE_RESOLVCONF}
         HAVE_SYSTEMD=${HAVE_SYSTEMD}
@@ -225,6 +224,12 @@ else()
         RESOLVCONF_PATH="${RESOLVCONF_PATH}"
         REVISION="${PROJECT_VERSION}"
     )
+
+    # ipv4.c uses #ifdef for this feature, so do not define it to 0.
+    if(HAVE_RT_ENTRY_WITH_RT_DST)
+        target_compile_definitions(openfortivpn PRIVATE
+            HAVE_RT_ENTRY_WITH_RT_DST=1)
+    endif()
 
     if(HAVE_PTY_H)
         target_compile_definitions(openfortivpn PRIVATE HAVE_PTY_H=1)

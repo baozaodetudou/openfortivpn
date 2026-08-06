@@ -39,19 +39,31 @@
 #include <openssl/x509v3.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 
 /* Wintun session ring buffer size: 4 MB */
 #define WINTUN_RING_CAPACITY 0x400000
 
-/* Adapter name visible in Windows Network Connections */
-#define ADAPTER_NAME L"openfortivpn"
+/* Shared Wintun driver-pool type; the per-instance adapter name is separate. */
 #define TUNNEL_TYPE  L"openfortivpn"
 
 
 static struct wintun_api wt_api;
 static int wt_api_loaded;
+
+static void ssl_disconnect(struct tunnel *tunnel);
+
+static void wintun_unload_api(void)
+{
+	if (!wt_api_loaded)
+		return;
+
+	wintun_unload(&wt_api);
+	memset(&wt_api, 0, sizeof(wt_api));
+	wt_api_loaded = 0;
+}
 
 /*
  * Load wintun.dll and create a TUN adapter.
@@ -61,10 +73,17 @@ static int wintun_create(struct tunnel *tunnel)
 	WINTUN_ADAPTER_HANDLE adapter;
 	WINTUN_SESSION_HANDLE session;
 	NET_LUID luid;
+	WCHAR adapter_name[128];
+	const char *adapter_name_utf8 = ipv4_win_adapter_name(tunnel);
+
+	if (adapter_name_utf8 == NULL)
+		return 1;
 
 	if (!wt_api_loaded) {
 		if (wintun_load(&wt_api) != 0) {
-			log_error("Failed to load wintun.dll. Please ensure wintun.dll is in the application directory or system PATH.\n");
+			log_error("Failed to load wintun.dll. Please ensure "
+			          "wintun.dll is in the application directory "
+			          "or system PATH.\n");
 			return 1;
 		}
 		wt_api_loaded = 1;
@@ -76,16 +95,18 @@ static int wintun_create(struct tunnel *tunnel)
 	}
 
 	/* Create the adapter */
-	adapter = wt_api.CreateAdapter(ADAPTER_NAME, TUNNEL_TYPE, NULL);
+	if (!MultiByteToWideChar(CP_UTF8, 0, adapter_name_utf8, -1,
+	                         adapter_name, ARRAY_SIZE(adapter_name))) {
+		log_error("Invalid or too long Wintun adapter name.\n");
+		return 1;
+	}
+	adapter = wt_api.CreateAdapter(adapter_name, TUNNEL_TYPE, NULL);
 	if (!adapter) {
-		log_error("Failed to create wintun adapter (error %lu).\nEnsure you are running as Administrator.\n",
+		log_error("Failed to create wintun adapter (error %lu).\n"
+		          "Ensure you are running as Administrator.\n",
 		          GetLastError());
 		return 1;
 	}
-
-	/* Get the adapter LUID for routing */
-	wt_api.GetAdapterLUID(adapter, &luid);
-	ipv4_win_set_tun_luid(&luid);
 
 	/* Start a session */
 	session = wt_api.StartSession(adapter, WINTUN_RING_CAPACITY);
@@ -96,13 +117,12 @@ static int wintun_create(struct tunnel *tunnel)
 		return 1;
 	}
 
-	/*
-	 * Store handles in tunnel struct.
-	 * tun_adapter stores a pointer to the static wt_api struct
-	 * (which contains the function pointers AND the adapter handle),
-	 * tun_session stores the session handle.
-	 */
-	tunnel->tun_adapter = (void *)&wt_api;
+	/* Publish the LUID only after all adapter resources are ready. */
+	wt_api.GetAdapterLUID(adapter, &luid);
+	ipv4_win_set_tun_luid(&luid);
+
+	/* Store the actual adapter and session handles per tunnel instance. */
+	tunnel->tun_adapter = (void *)adapter;
 	tunnel->tun_session = (void *)session;
 
 	log_info("Wintun adapter created.\n");
@@ -114,31 +134,44 @@ static int wintun_create(struct tunnel *tunnel)
  */
 static int wintun_configure_ip(struct tunnel *tunnel)
 {
-	MIB_UNICASTIPADDRESS_ROW addr_row;
-	NET_LUID luid;
 	DWORD ret;
+	int status = 0;
 	char ip_str[INET_ADDRSTRLEN];
-
-	/* Use netsh to set the IP address (most reliable approach) */
-	inet_ntop(AF_INET, &tunnel->ipv4.ip_addr, ip_str, sizeof(ip_str));
-
+	const char *adapter_name = ipv4_win_adapter_name(tunnel);
 	char cmd[256];
 
+	if (adapter_name == NULL)
+		return -1;
+
+	/* Use netsh to set the IP address (most reliable approach) */
+	if (inet_ntop(AF_INET, &tunnel->ipv4.ip_addr,
+	              ip_str, sizeof(ip_str)) == NULL) {
+		log_error("Could not format the tunnel IPv4 address.\n");
+		return -1;
+	}
+
 	snprintf(cmd, sizeof(cmd),
-	         "netsh interface ipv4 set address name=\"openfortivpn\" static %s 255.255.255.255",
-	         ip_str);
+	         "netsh interface ipv4 set address name=\"%s\" static %s 255.255.255.255",
+	         adapter_name, ip_str);
 	log_debug("Running: %s\n", cmd);
 	ret = system(cmd);
-	if (ret != 0)
+	if (ret != 0) {
 		log_warn("Failed to set IP address on adapter.\n");
+		status = -1;
+	}
 
 	/* Set MTU to match PPP MRU */
 	snprintf(cmd, sizeof(cmd),
-	         "netsh interface ipv4 set subinterface \"openfortivpn\" mtu=1354 store=active");
+	         "netsh interface ipv4 set subinterface \"%s\" mtu=1354 store=active",
+	         adapter_name);
 	log_debug("Running: %s\n", cmd);
-	system(cmd);
+	ret = system(cmd);
+	if (ret != 0) {
+		log_warn("Failed to set MTU on adapter.\n");
+		status = -1;
+	}
 
-	return 0;
+	return status;
 }
 
 static void wintun_destroy(struct tunnel *tunnel)
@@ -148,8 +181,12 @@ static void wintun_destroy(struct tunnel *tunnel)
 		tunnel->tun_session = NULL;
 	}
 
-	/* Close adapter - remove it from Windows */
-	/* Note: adapter handle is managed via wt_api, not stored separately */
+	if (tunnel->tun_adapter) {
+		wt_api.CloseAdapter((WINTUN_ADAPTER_HANDLE)tunnel->tun_adapter);
+		tunnel->tun_adapter = NULL;
+	}
+
+	ipv4_win_clear_tun_luid();
 
 	log_info("Wintun adapter destroyed.\n");
 }
@@ -209,19 +246,7 @@ int ssl_connect(struct tunnel *tunnel)
 	int ret;
 
 	/* Disconnect any existing SSL connection */
-	if (tunnel->ssl_handle) {
-		SSL_shutdown(tunnel->ssl_handle);
-		SSL_free(tunnel->ssl_handle);
-		tunnel->ssl_handle = NULL;
-	}
-	if (tunnel->ssl_context) {
-		SSL_CTX_free(tunnel->ssl_context);
-		tunnel->ssl_context = NULL;
-	}
-	if (tunnel->ssl_socket >= 0) {
-		closesocket(tunnel->ssl_socket);
-		tunnel->ssl_socket = -1;
-	}
+	ssl_disconnect(tunnel);
 
 	/* TCP connect */
 	ret = tcp_connect(tunnel);
@@ -232,7 +257,8 @@ int ssl_connect(struct tunnel *tunnel)
 	tunnel->ssl_context = SSL_CTX_new(SSLv23_client_method());
 	if (!tunnel->ssl_context) {
 		log_error("SSL_CTX_new failed.\n");
-		return 1;
+		ret = 1;
+		goto err;
 	}
 
 	/* Set minimum TLS version if configured */
@@ -285,7 +311,8 @@ int ssl_connect(struct tunnel *tunnel)
 	tunnel->ssl_handle = SSL_new(tunnel->ssl_context);
 	if (!tunnel->ssl_handle) {
 		log_error("SSL_new failed.\n");
-		return 1;
+		ret = 1;
+		goto err;
 	}
 
 	SSL_set_fd(tunnel->ssl_handle, tunnel->ssl_socket);
@@ -302,7 +329,8 @@ int ssl_connect(struct tunnel *tunnel)
 	if (ret != 1) {
 		log_error("SSL_connect failed: %s\n",
 		          ERR_error_string(ERR_get_error(), NULL));
-		return 1;
+		ret = 1;
+		goto err;
 	}
 
 	/* Verify server certificate */
@@ -344,17 +372,23 @@ int ssl_connect(struct tunnel *tunnel)
 					          digest_str);
 					event_emit_cert_error(digest_str,
 					                      "verification_failed");
-					return OFV_EXIT_CERT_FAILED;
+					ret = OFV_EXIT_CERT_FAILED;
+					goto err;
 				}
 				log_debug("Trusted certificate matched.\n");
 			} else {
 				log_error("No server certificate received.\n");
-				return 1;
+				ret = 1;
+				goto err;
 			}
 		}
 	}
 
 	return 0;
+
+err:
+	ssl_disconnect(tunnel);
+	return ret;
 }
 
 static void ssl_disconnect(struct tunnel *tunnel)
@@ -447,7 +481,8 @@ static int on_ppp_if_up(struct tunnel *tunnel)
 	}
 
 	/* Configure IP on the wintun adapter */
-	wintun_configure_ip(tunnel);
+	if (wintun_configure_ip(tunnel) != 0)
+		return -1;
 
 	/* Set up routes */
 	if (tunnel->config->set_routes) {
@@ -504,6 +539,9 @@ int run_tunnel(struct vpn_config *config)
 		.on_ppp_if_up = on_ppp_if_up,
 		.on_ppp_if_down = on_ppp_if_down
 	};
+
+	/* Do not retain an adapter identity across persistent reconnects. */
+	ipv4_win_clear_tun_luid();
 
 	/* Initialize PPP state machine */
 	ppp_init(&ppp_ctx);
@@ -615,15 +653,17 @@ err_tunnel:
 	if (ssl_connect(&tunnel) == 0) {
 		auth_log_out(&tunnel);
 		log_info("Logged out.\n");
-		ssl_disconnect(&tunnel);
 	} else {
 		log_info("Could not log out.\n");
 	}
+	ssl_disconnect(&tunnel);
 
 	if (tunnel.ipv4.split_rt != NULL) {
 		free(tunnel.ipv4.split_rt);
 		tunnel.ipv4.split_rt = NULL;
 	}
+	wintun_unload_api();
+	ipv4_win_clear_tun_luid();
 	return ret;
 }
 

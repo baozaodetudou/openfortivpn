@@ -10,6 +10,26 @@ On Windows, it uses an in-process PPP engine with
 
 It is compatible with Fortinet VPNs.
 
+Desktop manager
+---------------
+
+The [`app`](app/) directory contains a Tauri 2 + Svelte desktop manager for
+Linux, macOS and Windows. It provides profile CRUD, concurrent connection
+instances, per-instance status and structured logs. Its desktop build compiles
+this repository's openfortivpn engine and bundles the resulting binary as an
+application resource.
+
+```shell
+cd app
+pnpm install
+pnpm check
+pnpm tauri dev
+```
+
+Windows requires `wintun.dll`; set `WINTUN_DLL` to its full path before running
+the Tauri build. See [`app/README.md`](app/README.md) for privilege and password
+storage notes.
+
 Usage
 -----
 
@@ -188,6 +208,14 @@ Download `wintun.dll` from https://www.wintun.net/ and place it next to
 ```shell
 openfortivpn vpn-gateway:8443 --username=foo
 ```
+
+For multiple Windows tunnels, use a unique adapter name for each instance:
+
+```shell
+openfortivpn vpn-gateway:8443 --username=foo --pppd-ifname=office-vpn
+```
+
+The adapter name is restricted to ASCII letters, digits, `-` and `_`.
 
 ### Building and installing from source
 

@@ -72,8 +72,10 @@
 "                                /etc/ppp/ppp.conf.\n"
 #elif defined(_WIN32)
 /* On Windows, PPP is handled in-process via wintun */
-#define PPPD_USAGE ""
-#define PPPD_HELP ""
+#define PPPD_USAGE \
+"                    [--pppd-ifname=<string>]\n"
+#define PPPD_HELP \
+"  --pppd-ifname=<string>        Set the per-instance Wintun adapter name.\n"
 #else
 #error "Neither HAVE_USR_SBIN_PPPD nor HAVE_USR_SBIN_PPP have been defined."
 #endif

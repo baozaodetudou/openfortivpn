@@ -1,0 +1,996 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
+use std::env;
+use std::fs;
+use std::io::{BufRead, BufReader, Read};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Emitter, Manager, State};
+use uuid::Uuid;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VpnProfile {
+    id: String,
+    name: String,
+    host: String,
+    port: u16,
+    username: String,
+    realm: String,
+    trusted_cert: String,
+    set_routes: bool,
+    set_dns: bool,
+    pppd_use_peerdns: bool,
+    half_internet_routes: bool,
+    use_sudo: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveProfileInput {
+    profile: VpnProfile,
+    password: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProfileView {
+    profile: VpnProfile,
+    has_secret: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstanceView {
+    id: String,
+    profile_id: String,
+    profile_name: String,
+    adapter_name: String,
+    status: String,
+    message: String,
+    pid: u32,
+    started_at: u64,
+    ended_at: Option<u64>,
+    exit_code: Option<i32>,
+}
+
+struct ManagedInstance {
+    view: InstanceView,
+    child: Arc<Mutex<Child>>,
+}
+
+#[derive(Default)]
+struct RuntimeStore {
+    profiles: BTreeMap<String, VpnProfile>,
+    secrets: HashMap<String, String>,
+    instances: BTreeMap<String, ManagedInstance>,
+}
+
+#[derive(Default)]
+struct AppState {
+    store: Mutex<RuntimeStore>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineInfo {
+    platform: String,
+    path: String,
+    available: bool,
+    version: String,
+    requires_elevation: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogEvent {
+    instance_id: String,
+    stream: String,
+    line: String,
+    timestamp: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineEvent {
+    instance_id: String,
+    payload: Value,
+}
+
+fn now_epoch() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn lock_store<'a>(
+    state: &'a State<'_, AppState>,
+) -> Result<std::sync::MutexGuard<'a, RuntimeStore>, String> {
+    state
+        .store
+        .lock()
+        .map_err(|_| "内部运行状态已损坏".to_string())
+}
+
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法确定应用数据目录：{error}"))?;
+    fs::create_dir_all(&path).map_err(|error| format!("无法创建应用数据目录：{error}"))?;
+    Ok(path)
+}
+
+fn profiles_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join("profiles.json"))
+}
+
+fn load_profiles(app: &AppHandle) -> Result<BTreeMap<String, VpnProfile>, String> {
+    let path = profiles_path(app)?;
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+
+    let contents = fs::read_to_string(&path)
+        .map_err(|error| format!("无法读取配置列表 {}：{error}", path.display()))?;
+    let profiles: Vec<VpnProfile> =
+        serde_json::from_str(&contents).map_err(|error| format!("配置列表格式错误：{error}"))?;
+    Ok(profiles
+        .into_iter()
+        .map(|profile| (profile.id.clone(), profile))
+        .collect())
+}
+
+fn persist_profiles(
+    app: &AppHandle,
+    profiles: &BTreeMap<String, VpnProfile>,
+) -> Result<(), String> {
+    let path = profiles_path(app)?;
+    let values: Vec<&VpnProfile> = profiles.values().collect();
+    let contents = serde_json::to_string_pretty(&values)
+        .map_err(|error| format!("无法序列化配置列表：{error}"))?;
+    fs::write(&path, contents)
+        .map_err(|error| format!("无法保存配置列表 {}：{error}", path.display()))?;
+
+    #[cfg(unix)]
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("无法设置配置列表权限：{error}"))?;
+
+    Ok(())
+}
+
+fn validate_line_value(label: &str, value: &str) -> Result<(), String> {
+    if value.contains('\n') || value.contains('\r') {
+        return Err(format!("{label} 不能包含换行符"));
+    }
+    Ok(())
+}
+
+fn validate_profile(profile: &VpnProfile) -> Result<(), String> {
+    if profile.name.trim().is_empty() {
+        return Err("配置名称不能为空".to_string());
+    }
+    if profile.host.trim().is_empty() {
+        return Err("VPN 服务器不能为空".to_string());
+    }
+    if profile.port == 0 {
+        return Err("端口必须在 1 到 65535 之间".to_string());
+    }
+
+    validate_line_value("配置名称", &profile.name)?;
+    validate_line_value("服务器", &profile.host)?;
+    validate_line_value("用户名", &profile.username)?;
+    validate_line_value("Realm", &profile.realm)?;
+
+    if !profile.trusted_cert.is_empty()
+        && (profile.trusted_cert.len() != 64
+            || !profile
+                .trusted_cert
+                .chars()
+                .all(|character| character.is_ascii_hexdigit()))
+    {
+        return Err("受信任证书必须是 64 位 SHA-256 十六进制摘要".to_string());
+    }
+
+    Ok(())
+}
+
+fn profile_view(profile: &VpnProfile, has_secret: bool) -> ProfileView {
+    ProfileView {
+        profile: profile.clone(),
+        has_secret,
+    }
+}
+
+fn resolve_engine(app: &AppHandle) -> PathBuf {
+    if let Some(path) = env::var_os("OPENFORTIVPN_BIN") {
+        return PathBuf::from(path);
+    }
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        #[cfg(windows)]
+        let candidate = resource_dir.join("bin").join("openfortivpn.exe");
+        #[cfg(not(windows))]
+        let candidate = resource_dir.join("bin").join("openfortivpn");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(executable) = env::current_exe() {
+            if let Some(parent) = executable.parent() {
+                let candidate = parent.join("openfortivpn.exe");
+                if candidate.exists() {
+                    return candidate;
+                }
+            }
+        }
+        PathBuf::from("openfortivpn.exe")
+    }
+
+    #[cfg(not(windows))]
+    {
+        for candidate in [
+            "/opt/homebrew/bin/openfortivpn",
+            "/usr/local/bin/openfortivpn",
+            "/usr/bin/openfortivpn",
+        ] {
+            let path = PathBuf::from(candidate);
+            if path.exists() {
+                return path;
+            }
+        }
+        PathBuf::from("openfortivpn")
+    }
+}
+
+fn make_adapter_name(profile: &VpnProfile, instance_id: &str) -> String {
+    let mut base: String = profile
+        .name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+        .take(18)
+        .collect();
+    if base.is_empty() {
+        base = "vpn".to_string();
+    }
+    let suffix: String = instance_id.chars().filter(|c| *c != '-').take(8).collect();
+    format!("ofv-{base}-{suffix}")
+}
+
+fn push_config_line(buffer: &mut String, key: &str, value: &str) {
+    if !value.is_empty() {
+        buffer.push_str(key);
+        buffer.push_str(" = ");
+        buffer.push_str(value);
+        buffer.push('\n');
+    }
+}
+
+fn render_runtime_config(
+    profile: &VpnProfile,
+    password: &str,
+    adapter_name: &str,
+) -> Result<String, String> {
+    validate_line_value("密码", password)?;
+
+    let mut config = String::from("# Generated by OpenFortiVPN Manager. Do not edit.\n");
+    push_config_line(&mut config, "host", profile.host.trim());
+    push_config_line(&mut config, "port", &profile.port.to_string());
+    push_config_line(&mut config, "username", &profile.username);
+    push_config_line(&mut config, "password", password);
+    push_config_line(&mut config, "realm", &profile.realm);
+    push_config_line(&mut config, "trusted-cert", &profile.trusted_cert);
+    push_config_line(
+        &mut config,
+        "set-routes",
+        if profile.set_routes { "1" } else { "0" },
+    );
+    push_config_line(
+        &mut config,
+        "set-dns",
+        if profile.set_dns { "1" } else { "0" },
+    );
+    push_config_line(
+        &mut config,
+        "pppd-use-peerdns",
+        if profile.pppd_use_peerdns { "1" } else { "0" },
+    );
+    push_config_line(
+        &mut config,
+        "half-internet-routes",
+        if profile.half_internet_routes {
+            "1"
+        } else {
+            "0"
+        },
+    );
+
+    #[cfg(windows)]
+    push_config_line(&mut config, "pppd-ifname", adapter_name);
+    #[cfg(not(windows))]
+    let _ = adapter_name;
+
+    Ok(config)
+}
+
+fn write_runtime_config(
+    app: &AppHandle,
+    profile: &VpnProfile,
+    password: &str,
+    instance_id: &str,
+    adapter_name: &str,
+) -> Result<PathBuf, String> {
+    let directory = app_data_dir(app)?.join("runtime");
+    fs::create_dir_all(&directory).map_err(|error| format!("无法创建运行目录：{error}"))?;
+    let path = directory.join(format!("{instance_id}.conf"));
+    let config = render_runtime_config(profile, password, adapter_name)?;
+    fs::write(&path, config)
+        .map_err(|error| format!("无法写入临时配置 {}：{error}", path.display()))?;
+
+    #[cfg(unix)]
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("无法设置临时配置权限：{error}"))?;
+
+    Ok(path)
+}
+
+fn emit_instance(app: &AppHandle, view: &InstanceView) {
+    let _ = app.emit("vpn-instance-changed", view.clone());
+}
+
+fn update_instance(app: &AppHandle, instance_id: &str, status: &str, message: String) {
+    let view = {
+        let state = app.state::<AppState>();
+        let Ok(mut store) = state.store.lock() else {
+            return;
+        };
+        let Some(instance) = store.instances.get_mut(instance_id) else {
+            return;
+        };
+        instance.view.status = status.to_string();
+        instance.view.message = message;
+        instance.view.clone()
+    };
+    emit_instance(app, &view);
+}
+
+fn handle_engine_event(app: &AppHandle, instance_id: &str, payload: &Value) {
+    let event_name = payload
+        .get("event")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+
+    match event_name {
+        "state_change" => {
+            let state_name = payload
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("connecting");
+            let status = match state_name {
+                "disconnecting" => "disconnecting",
+                _ => "connecting",
+            };
+            update_instance(app, instance_id, status, state_name.to_string());
+        }
+        "tunnel_up" => {
+            let ip = payload
+                .get("local_ip")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            update_instance(app, instance_id, "connected", format!("已连接 · {ip}"));
+        }
+        "tunnel_down" => {
+            update_instance(
+                app,
+                instance_id,
+                "disconnecting",
+                "隧道正在关闭".to_string(),
+            );
+        }
+        "error" => {
+            let message = payload
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("连接失败");
+            update_instance(app, instance_id, "failed", message.to_string());
+        }
+        "cert_error" => {
+            update_instance(app, instance_id, "failed", "服务器证书验证失败".to_string());
+        }
+        _ => {}
+    }
+
+    let _ = app.emit(
+        "vpn-engine-event",
+        EngineEvent {
+            instance_id: instance_id.to_string(),
+            payload: payload.clone(),
+        },
+    );
+}
+
+fn spawn_stream_reader<R>(reader: R, app: AppHandle, instance_id: String, stream: &str)
+where
+    R: Read + Send + 'static,
+{
+    let stream = stream.to_string();
+    thread::spawn(move || {
+        for line in BufReader::new(reader).lines() {
+            let Ok(line) = line else {
+                break;
+            };
+
+            if let Ok(payload) = serde_json::from_str::<Value>(&line) {
+                if payload.get("event").is_some() {
+                    handle_engine_event(&app, &instance_id, &payload);
+                    continue;
+                }
+            }
+
+            let _ = app.emit(
+                "vpn-log",
+                LogEvent {
+                    instance_id: instance_id.clone(),
+                    stream: stream.clone(),
+                    line,
+                    timestamp: now_epoch(),
+                },
+            );
+        }
+    });
+}
+
+fn spawn_process_monitor(
+    app: AppHandle,
+    instance_id: String,
+    child: Arc<Mutex<Child>>,
+    config_path: PathBuf,
+) {
+    thread::spawn(move || loop {
+        let status = {
+            let Ok(mut child) = child.lock() else {
+                update_instance(
+                    &app,
+                    &instance_id,
+                    "failed",
+                    "无法访问 VPN 进程".to_string(),
+                );
+                return;
+            };
+            child.try_wait()
+        };
+
+        match status {
+            Ok(Some(exit_status)) => {
+                let view = {
+                    let state = app.state::<AppState>();
+                    let Ok(mut store) = state.store.lock() else {
+                        return;
+                    };
+                    let Some(instance) = store.instances.get_mut(&instance_id) else {
+                        return;
+                    };
+                    let was_stopping = instance.view.status == "disconnecting";
+                    let success = exit_status.success();
+                    instance.view.status = if success || was_stopping {
+                        "disconnected".to_string()
+                    } else {
+                        "failed".to_string()
+                    };
+                    instance.view.message = match exit_status.code() {
+                        Some(code) => format!("进程已退出，代码 {code}"),
+                        None => "进程已终止".to_string(),
+                    };
+                    instance.view.exit_code = exit_status.code();
+                    instance.view.ended_at = Some(now_epoch());
+                    instance.view.clone()
+                };
+                let _ = fs::remove_file(&config_path);
+                emit_instance(&app, &view);
+                return;
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(250)),
+            Err(error) => {
+                update_instance(
+                    &app,
+                    &instance_id,
+                    "failed",
+                    format!("无法检查 VPN 进程：{error}"),
+                );
+                return;
+            }
+        }
+    });
+}
+
+#[tauri::command]
+fn list_profiles(state: State<'_, AppState>) -> Result<Vec<ProfileView>, String> {
+    let store = lock_store(&state)?;
+    Ok(store
+        .profiles
+        .values()
+        .map(|profile| profile_view(profile, store.secrets.contains_key(&profile.id)))
+        .collect())
+}
+
+#[tauri::command]
+fn save_profile(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mut input: SaveProfileInput,
+) -> Result<ProfileView, String> {
+    if input.profile.id.trim().is_empty() {
+        input.profile.id = Uuid::new_v4().to_string();
+    }
+    validate_profile(&input.profile)?;
+
+    let view = {
+        let mut store = lock_store(&state)?;
+        if let Some(password) = input.password {
+            if !password.is_empty() {
+                validate_line_value("密码", &password)?;
+                store.secrets.insert(input.profile.id.clone(), password);
+            }
+        }
+        store
+            .profiles
+            .insert(input.profile.id.clone(), input.profile.clone());
+        persist_profiles(&app, &store.profiles)?;
+        profile_view(
+            &input.profile,
+            store.secrets.contains_key(&input.profile.id),
+        )
+    };
+
+    Ok(view)
+}
+
+#[tauri::command]
+fn delete_profile(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile_id: String,
+) -> Result<(), String> {
+    let mut store = lock_store(&state)?;
+    let is_active = store.instances.values().any(|instance| {
+        instance.view.profile_id == profile_id
+            && matches!(
+                instance.view.status.as_str(),
+                "starting" | "connecting" | "connected" | "disconnecting"
+            )
+    });
+    if is_active {
+        return Err("该配置仍有运行中的连接，请先断开".to_string());
+    }
+
+    store.profiles.remove(&profile_id);
+    store.secrets.remove(&profile_id);
+    persist_profiles(&app, &store.profiles)
+}
+
+#[tauri::command]
+fn list_instances(state: State<'_, AppState>) -> Result<Vec<InstanceView>, String> {
+    let store = lock_store(&state)?;
+    let mut instances: Vec<InstanceView> = store
+        .instances
+        .values()
+        .map(|instance| instance.view.clone())
+        .collect();
+    instances.sort_by_key(|instance| std::cmp::Reverse(instance.started_at));
+    Ok(instances)
+}
+
+#[tauri::command]
+fn engine_info(app: AppHandle) -> EngineInfo {
+    let path = resolve_engine(&app);
+    let output = Command::new(&path).arg("--version").output();
+    let (available, version) = match output {
+        Ok(output) if output.status.success() => (
+            true,
+            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        ),
+        Ok(output) => (
+            false,
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ),
+        Err(error) => (false, error.to_string()),
+    };
+
+    EngineInfo {
+        platform: env::consts::OS.to_string(),
+        path: path.to_string_lossy().to_string(),
+        available,
+        version,
+        requires_elevation: true,
+    }
+}
+
+#[tauri::command]
+fn start_profile(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    profile_id: String,
+) -> Result<InstanceView, String> {
+    let (profile, password) = {
+        let store = lock_store(&state)?;
+        let profile = store
+            .profiles
+            .get(&profile_id)
+            .cloned()
+            .ok_or_else(|| "找不到指定配置".to_string())?;
+        let password = store
+            .secrets
+            .get(&profile_id)
+            .cloned()
+            .ok_or_else(|| "密码未保存在当前会话，请编辑配置并重新输入密码".to_string())?;
+        (profile, password)
+    };
+
+    let instance_id = Uuid::new_v4().to_string();
+    let adapter_name = make_adapter_name(&profile, &instance_id);
+    let config_path = write_runtime_config(&app, &profile, &password, &instance_id, &adapter_name)?;
+    let engine = resolve_engine(&app);
+
+    #[cfg(unix)]
+    let mut command = if profile.use_sudo {
+        let mut command = Command::new("sudo");
+        command.arg("-n").arg(&engine);
+        command
+    } else {
+        Command::new(&engine)
+    };
+
+    #[cfg(windows)]
+    let mut command = Command::new(&engine);
+
+    command
+        .arg("--json-events")
+        .arg("-c")
+        .arg(&config_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command.spawn().map_err(|error| {
+        let _ = fs::remove_file(&config_path);
+        format!("无法启动 {}：{error}", engine.display())
+    })?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let pid = child.id();
+    let child = Arc::new(Mutex::new(child));
+    let view = InstanceView {
+        id: instance_id.clone(),
+        profile_id: profile.id.clone(),
+        profile_name: profile.name.clone(),
+        adapter_name,
+        status: "starting".to_string(),
+        message: "VPN 进程已启动".to_string(),
+        pid,
+        started_at: now_epoch(),
+        ended_at: None,
+        exit_code: None,
+    };
+
+    {
+        let mut store = lock_store(&state)?;
+        store.instances.insert(
+            instance_id.clone(),
+            ManagedInstance {
+                view: view.clone(),
+                child: child.clone(),
+            },
+        );
+    }
+
+    if let Some(stdout) = stdout {
+        spawn_stream_reader(stdout, app.clone(), instance_id.clone(), "stdout");
+    }
+    if let Some(stderr) = stderr {
+        spawn_stream_reader(stderr, app.clone(), instance_id.clone(), "stderr");
+    }
+    spawn_process_monitor(app.clone(), instance_id, child, config_path);
+    emit_instance(&app, &view);
+
+    Ok(view)
+}
+
+#[tauri::command]
+fn stop_instance(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    instance_id: String,
+) -> Result<(), String> {
+    let (child, pid, view) = {
+        let mut store = lock_store(&state)?;
+        let instance = store
+            .instances
+            .get_mut(&instance_id)
+            .ok_or_else(|| "找不到指定连接实例".to_string())?;
+        if matches!(instance.view.status.as_str(), "disconnected" | "failed") {
+            return Ok(());
+        }
+        instance.view.status = "disconnecting".to_string();
+        instance.view.message = "正在断开连接".to_string();
+        (
+            instance.child.clone(),
+            instance.view.pid,
+            instance.view.clone(),
+        )
+    };
+    emit_instance(&app, &view);
+
+    #[cfg(unix)]
+    {
+        let result = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status();
+        if !matches!(result, Ok(status) if status.success()) {
+            let mut child = child.lock().map_err(|_| "无法访问 VPN 进程".to_string())?;
+            child
+                .kill()
+                .map_err(|error| format!("无法停止 VPN 进程：{error}"))?;
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = pid;
+        let mut child = child.lock().map_err(|_| "无法访问 VPN 进程".to_string())?;
+        child
+            .kill()
+            .map_err(|error| format!("无法停止 VPN 进程：{error}"))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn export_profile_config(state: State<'_, AppState>, profile_id: String) -> Result<String, String> {
+    let store = lock_store(&state)?;
+    let profile = store
+        .profiles
+        .get(&profile_id)
+        .ok_or_else(|| "找不到指定配置".to_string())?;
+    render_runtime_config(profile, "", "openfortivpn")
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(AppState::default())
+        .setup(|app| {
+            let profiles = load_profiles(app.handle()).unwrap_or_default();
+            let state = app.state::<AppState>();
+            if let Ok(mut store) = state.store.lock() {
+                store.profiles = profiles;
+            }
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            list_profiles,
+            save_profile,
+            delete_profile,
+            list_instances,
+            engine_info,
+            start_profile,
+            stop_instance,
+            export_profile_config,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running OpenFortiVPN Manager");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type ProfileMutator = fn(&mut VpnProfile);
+
+    fn valid_profile() -> VpnProfile {
+        VpnProfile {
+            id: "profile-1".to_string(),
+            name: "Office VPN".to_string(),
+            host: "vpn.example.com".to_string(),
+            port: 443,
+            username: "alice".to_string(),
+            realm: "employees".to_string(),
+            trusted_cert: "aB".repeat(32),
+            set_routes: true,
+            set_dns: true,
+            pppd_use_peerdns: false,
+            half_internet_routes: false,
+            use_sudo: true,
+        }
+    }
+
+    #[test]
+    fn accepts_a_complete_valid_profile() {
+        assert_eq!(validate_profile(&valid_profile()), Ok(()));
+    }
+
+    #[test]
+    fn rejects_missing_required_profile_values() {
+        let mut profile = valid_profile();
+        profile.name = " \t ".to_string();
+        assert_eq!(
+            validate_profile(&profile),
+            Err("配置名称不能为空".to_string())
+        );
+
+        let mut profile = valid_profile();
+        profile.host = "  ".to_string();
+        assert_eq!(
+            validate_profile(&profile),
+            Err("VPN 服务器不能为空".to_string())
+        );
+
+        let mut profile = valid_profile();
+        profile.port = 0;
+        assert_eq!(
+            validate_profile(&profile),
+            Err("端口必须在 1 到 65535 之间".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_line_break_injection_in_profile_fields() {
+        let cases: [(&str, ProfileMutator); 4] = [
+            ("配置名称", |profile: &mut VpnProfile| {
+                profile.name = "Office\nset-dns = 0".to_string()
+            }),
+            ("服务器", |profile: &mut VpnProfile| {
+                profile.host = "vpn.example.com\rport = 1".to_string()
+            }),
+            ("用户名", |profile: &mut VpnProfile| {
+                profile.username = "alice\npassword = injected".to_string()
+            }),
+            ("Realm", |profile: &mut VpnProfile| {
+                profile.realm = "employees\rset-routes = 0".to_string()
+            }),
+        ];
+
+        for (label, mutate) in cases {
+            let mut profile = valid_profile();
+            mutate(&mut profile);
+            assert_eq!(
+                validate_profile(&profile),
+                Err(format!("{label} 不能包含换行符"))
+            );
+        }
+    }
+
+    #[test]
+    fn validates_trusted_certificate_sha256_digest() {
+        let mut profile = valid_profile();
+        profile.trusted_cert.clear();
+        assert_eq!(validate_profile(&profile), Ok(()));
+
+        profile.trusted_cert = "a".repeat(63);
+        assert_eq!(
+            validate_profile(&profile),
+            Err("受信任证书必须是 64 位 SHA-256 十六进制摘要".to_string())
+        );
+
+        profile.trusted_cert = format!("{}g", "a".repeat(63));
+        assert_eq!(
+            validate_profile(&profile),
+            Err("受信任证书必须是 64 位 SHA-256 十六进制摘要".to_string())
+        );
+    }
+
+    #[test]
+    fn renders_runtime_config_with_all_profile_options() {
+        let mut profile = valid_profile();
+        profile.host = "  vpn.example.com  ".to_string();
+        profile.pppd_use_peerdns = true;
+        profile.half_internet_routes = true;
+
+        let config = render_runtime_config(&profile, "secret", "ofv-office-12345678")
+            .expect("valid profile should render");
+
+        assert!(config.starts_with("# Generated by OpenFortiVPN Manager. Do not edit.\n"));
+        assert!(config.contains("host = vpn.example.com\n"));
+        assert!(config.contains("port = 443\n"));
+        assert!(config.contains("username = alice\n"));
+        assert!(config.contains("password = secret\n"));
+        assert!(config.contains("realm = employees\n"));
+        assert!(config.contains(&format!("trusted-cert = {}\n", "aB".repeat(32))));
+        assert!(config.contains("set-routes = 1\n"));
+        assert!(config.contains("set-dns = 1\n"));
+        assert!(config.contains("pppd-use-peerdns = 1\n"));
+        assert!(config.contains("half-internet-routes = 1\n"));
+
+        #[cfg(windows)]
+        assert!(config.contains("pppd-ifname = ofv-office-12345678\n"));
+        #[cfg(not(windows))]
+        assert!(!config.contains("pppd-ifname"));
+    }
+
+    #[test]
+    fn renders_disabled_flags_and_omits_empty_optional_values() {
+        let mut profile = valid_profile();
+        profile.username.clear();
+        profile.realm.clear();
+        profile.trusted_cert.clear();
+        profile.set_routes = false;
+        profile.set_dns = false;
+
+        let config = render_runtime_config(&profile, "", "ofv-office-12345678")
+            .expect("empty optional values should be allowed");
+
+        assert!(!config.contains("username ="));
+        assert!(!config.contains("password ="));
+        assert!(!config.contains("realm ="));
+        assert!(!config.contains("trusted-cert ="));
+        assert!(config.contains("set-routes = 0\n"));
+        assert!(config.contains("set-dns = 0\n"));
+        assert!(config.contains("pppd-use-peerdns = 0\n"));
+        assert!(config.contains("half-internet-routes = 0\n"));
+    }
+
+    #[test]
+    fn rejects_line_break_injection_in_runtime_password() {
+        let error = render_runtime_config(
+            &valid_profile(),
+            "secret\nset-routes = 0",
+            "ofv-office-12345678",
+        )
+        .expect_err("password line breaks must be rejected");
+
+        assert_eq!(error, "密码 不能包含换行符");
+    }
+
+    #[test]
+    fn adapter_name_is_safe_bounded_and_deterministic() {
+        let mut profile = valid_profile();
+        profile.name = "Office_VPN ! 2026-Production-Long".to_string();
+
+        let name = make_adapter_name(&profile, "12345678-abcd-ef00-1111-222233334444");
+
+        assert_eq!(name, "ofv-OfficeVPN2026-Prod-12345678");
+        assert!(name.len() <= 31);
+        assert!(name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-'));
+        assert_eq!(
+            make_adapter_name(&profile, "12345678-abcd-ef00-1111-222233334444"),
+            name
+        );
+    }
+
+    #[test]
+    fn adapter_name_falls_back_for_non_ascii_profile_name() {
+        let mut profile = valid_profile();
+        profile.name = "公司专线".to_string();
+
+        assert_eq!(
+            make_adapter_name(&profile, "abcdef12-3456-7890-abcd-ef1234567890"),
+            "ofv-vpn-abcdef12"
+        );
+    }
+
+    #[test]
+    fn adapter_name_distinguishes_concurrent_instances() {
+        let profile = valid_profile();
+
+        let first = make_adapter_name(&profile, "11111111-aaaa-bbbb-cccc-dddddddddddd");
+        let second = make_adapter_name(&profile, "22222222-aaaa-bbbb-cccc-dddddddddddd");
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("ofv-OfficeVPN-"));
+        assert!(second.starts_with("ofv-OfficeVPN-"));
+    }
+}
