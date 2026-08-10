@@ -14,10 +14,11 @@ Desktop manager
 ---------------
 
 The [`app`](app/) directory contains a Tauri 2 + Svelte desktop manager for
-Linux, macOS and Windows. It provides profile CRUD, concurrent connection
-instances, per-instance status and structured logs. Its desktop build compiles
-this repository's openfortivpn engine and bundles the resulting binary as an
-application resource.
+Linux, macOS and Windows. Each profile owns at most one connection, while
+different profiles can connect concurrently. It provides profile CRUD,
+state-aware connect/reconnect/disconnect actions and structured logs. Its
+desktop build compiles this repository's openfortivpn engine and bundles the
+resulting binary as an application resource.
 
 ```shell
 cd app
@@ -48,6 +49,10 @@ running, it periodically renews the cache with `sudo -n -v`, and subsequent
 profiles that use sudo start through `sudo -n` without prompting again. Renewal
 stops when the application exits, and the system's sudo timeout policy still
 applies. Automatic profiles wait for this privilege unlock before connecting.
+
+Unexpected disconnects can be retried per profile with bounded backoff. A
+manual disconnect never enters that retry path, and active profiles cannot be
+edited or deleted until their connection has stopped.
 
 The computer administrator password is separate from each profile's VPN
 password. VPN passwords continue to be stored per profile in the system

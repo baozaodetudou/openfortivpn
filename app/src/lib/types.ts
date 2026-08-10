@@ -12,6 +12,7 @@ export type VpnProfile = {
   halfInternetRoutes: boolean;
   useSudo: boolean;
   autoConnect: boolean;
+  autoReconnect: boolean;
 };
 
 export type ProfileView = {
@@ -30,6 +31,8 @@ export type InstanceStatus =
 
 export type InstanceView = {
   id: string;
+  profileGeneration: number;
+  revision: number;
   profileId: string;
   profileName: string;
   adapterName: string;

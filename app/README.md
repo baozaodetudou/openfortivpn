@@ -3,6 +3,11 @@
 Tauri desktop application for managing OpenFortiVPN profiles and concurrent
 connection processes on Linux, macOS and Windows.
 
+Each profile owns at most one connection at a time. Different profiles can be
+connected concurrently. The UI exposes connect, disconnect and reconnect as
+state-aware actions; editing and deletion are blocked while that profile is
+active.
+
 ## Development
 
 ```shell
@@ -44,6 +49,12 @@ provides one. On Linux and macOS, profiles that use sudo wait until the startup
 privilege unlock described below succeeds or the user chooses an alternative
 privilege setup; they do not race ahead while the administrator-password dialog
 is pending.
+
+The separate **Reconnect automatically after an unexpected disconnect** option
+uses the password already available in the current app session and retries with
+a bounded exponential delay from 3 to 30 seconds. A user-requested disconnect
+never triggers automatic reconnection. Authentication and certificate-trust
+failures also stop the retry loop so they can be corrected explicitly.
 
 ## Privileges
 

@@ -35,6 +35,12 @@ struct VpnProfile {
     use_sudo: bool,
     #[serde(default)]
     auto_connect: bool,
+    #[serde(default = "default_auto_reconnect")]
+    auto_reconnect: bool,
+}
+
+fn default_auto_reconnect() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +64,7 @@ struct ProfileView {
 #[serde(rename_all = "camelCase")]
 struct InstanceView {
     id: String,
+    profile_generation: u64,
     profile_id: String,
     profile_name: String,
     adapter_name: String,
@@ -67,11 +74,16 @@ struct InstanceView {
     started_at: u64,
     ended_at: Option<u64>,
     exit_code: Option<i32>,
+    revision: u64,
 }
 
 struct ManagedInstance {
     view: InstanceView,
     child: Arc<Mutex<Child>>,
+    process_running: bool,
+    user_requested_stop: bool,
+    reconnect_blocked: bool,
+    failure_message: Option<String>,
 }
 
 #[derive(Default)]
@@ -80,6 +92,10 @@ struct RuntimeStore {
     secrets: HashMap<String, String>,
     stored_secret_profiles: HashSet<String>,
     instances: BTreeMap<String, ManagedInstance>,
+    starting_profiles: HashSet<String>,
+    mutating_profiles: HashSet<String>,
+    reconnect_attempts: HashMap<String, u32>,
+    reconnect_generations: HashMap<String, u64>,
 }
 
 #[derive(Default)]
@@ -405,7 +421,84 @@ fn emit_instance(app: &AppHandle, view: &InstanceView) {
     let _ = app.emit("vpn-instance-changed", view.clone());
 }
 
+fn profile_has_running_instance(store: &RuntimeStore, profile_id: &str) -> bool {
+    store
+        .instances
+        .values()
+        .any(|instance| instance.view.profile_id == profile_id && instance.process_running)
+}
+
+fn bump_reconnect_generation(store: &mut RuntimeStore, profile_id: &str) -> u64 {
+    let generation = store
+        .reconnect_generations
+        .entry(profile_id.to_string())
+        .or_default();
+    *generation = generation.saturating_add(1);
+    *generation
+}
+
+fn can_transition_instance(current: &str, next: &str) -> bool {
+    match current {
+        "starting" | "connecting" => matches!(
+            next,
+            "connecting" | "connected" | "disconnecting" | "disconnected" | "failed"
+        ),
+        "connected" => matches!(
+            next,
+            "connected" | "disconnecting" | "disconnected" | "failed"
+        ),
+        "disconnecting" => matches!(next, "disconnecting" | "disconnected" | "failed"),
+        "disconnected" | "failed" => false,
+        _ => false,
+    }
+}
+
+fn apply_instance_update(view: &mut InstanceView, status: &str, message: String) -> bool {
+    if !can_transition_instance(&view.status, status) {
+        return false;
+    }
+    view.status = status.to_string();
+    view.message = message;
+    view.revision = view.revision.saturating_add(1);
+    true
+}
+
 fn update_instance(app: &AppHandle, instance_id: &str, status: &str, message: String) {
+    let view = {
+        let state = app.state::<AppState>();
+        let Ok(mut store) = state.store.lock() else {
+            return;
+        };
+        let (view, profile_id) = {
+            let Some(instance) = store.instances.get_mut(instance_id) else {
+                return;
+            };
+            if !instance.process_running {
+                return;
+            }
+            if !apply_instance_update(&mut instance.view, status, message) {
+                return;
+            }
+            if status == "connected" {
+                instance.failure_message = None;
+                instance.reconnect_blocked = false;
+            }
+            (instance.view.clone(), instance.view.profile_id.clone())
+        };
+        if status == "connected" {
+            store.reconnect_attempts.remove(&profile_id);
+        }
+        view
+    };
+    emit_instance(app, &view);
+}
+
+fn record_instance_failure(
+    app: &AppHandle,
+    instance_id: &str,
+    message: String,
+    block_reconnect: bool,
+) {
     let view = {
         let state = app.state::<AppState>();
         let Ok(mut store) = state.store.lock() else {
@@ -414,11 +507,81 @@ fn update_instance(app: &AppHandle, instance_id: &str, status: &str, message: St
         let Some(instance) = store.instances.get_mut(instance_id) else {
             return;
         };
-        instance.view.status = status.to_string();
+        instance.reconnect_blocked |= block_reconnect;
+        instance.failure_message = Some(message.clone());
         instance.view.message = message;
+        instance.view.revision = instance.view.revision.saturating_add(1);
         instance.view.clone()
     };
     emit_instance(app, &view);
+}
+
+fn restore_instance_after_stop_failure(
+    app: &AppHandle,
+    instance_id: &str,
+    status: &str,
+    message: String,
+) {
+    let view = {
+        let state = app.state::<AppState>();
+        let Ok(mut store) = state.store.lock() else {
+            return;
+        };
+        let Some(instance) = store.instances.get_mut(instance_id) else {
+            return;
+        };
+        if instance.view.status != "disconnecting" {
+            return;
+        }
+        instance.user_requested_stop = false;
+        instance.view.status = status.to_string();
+        instance.view.message = message;
+        instance.view.revision = instance.view.revision.saturating_add(1);
+        instance.view.clone()
+    };
+    emit_instance(app, &view);
+}
+
+fn cancel_reconnect_for_stopped_instance(
+    app: &AppHandle,
+    instance_id: &str,
+) -> Result<Option<InstanceView>, String> {
+    let state = app.state::<AppState>();
+    let mut store = state
+        .store
+        .lock()
+        .map_err(|_| "内部运行状态已损坏".to_string())?;
+    let profile_id = {
+        let instance = store
+            .instances
+            .get(instance_id)
+            .ok_or_else(|| "找不到指定连接实例".to_string())?;
+        if instance.process_running {
+            return Ok(None);
+        }
+        instance.view.profile_id.clone()
+    };
+    bump_reconnect_generation(&mut store, &profile_id);
+    let instance = store
+        .instances
+        .get_mut(instance_id)
+        .ok_or_else(|| "找不到指定连接实例".to_string())?;
+    instance.user_requested_stop = true;
+    instance.view.message = "已断开，自动重连已取消".to_string();
+    instance.view.revision = instance.view.revision.saturating_add(1);
+    Ok(Some(instance.view.clone()))
+}
+
+fn status_for_engine_state(state: &str) -> &'static str {
+    match state {
+        "disconnecting" | "disconnected" | "down" => "disconnecting",
+        _ => "connecting",
+    }
+}
+
+fn fallback_status_from_log(line: &str) -> Option<(&'static str, &'static str)> {
+    line.contains("Tunnel is up and running.")
+        .then_some(("connected", "已连接"))
 }
 
 fn handle_engine_event(app: &AppHandle, instance_id: &str, payload: &Value) {
@@ -433,10 +596,7 @@ fn handle_engine_event(app: &AppHandle, instance_id: &str, payload: &Value) {
                 .get("state")
                 .and_then(Value::as_str)
                 .unwrap_or("connecting");
-            let status = match state_name {
-                "disconnecting" => "disconnecting",
-                _ => "connecting",
-            };
+            let status = status_for_engine_state(state_name);
             update_instance(app, instance_id, status, state_name.to_string());
         }
         "tunnel_up" => {
@@ -459,10 +619,10 @@ fn handle_engine_event(app: &AppHandle, instance_id: &str, payload: &Value) {
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or("连接失败");
-            update_instance(app, instance_id, "failed", message.to_string());
+            record_instance_failure(app, instance_id, message.to_string(), false);
         }
         "cert_error" => {
-            update_instance(app, instance_id, "failed", "服务器证书验证失败".to_string());
+            record_instance_failure(app, instance_id, "服务器证书验证失败".to_string(), true);
         }
         _ => {}
     }
@@ -508,6 +668,18 @@ where
                 }
             }
 
+            if line.contains("Could not authenticate to gateway.") {
+                record_instance_failure(
+                    &app,
+                    &instance_id,
+                    "VPN 身份验证失败，请检查账号和密码".to_string(),
+                    true,
+                );
+            }
+            if let Some((status, message)) = fallback_status_from_log(&line) {
+                update_instance(&app, &instance_id, status, message.to_string());
+            }
+
             let _ = app.emit(
                 "vpn-log",
                 LogEvent {
@@ -515,6 +687,68 @@ where
                     stream: stream.clone(),
                     line,
                     timestamp: now_epoch(),
+                },
+            );
+        }
+    });
+}
+
+fn auto_reconnect_delay_seconds(attempt: u32) -> u64 {
+    let exponent = attempt.saturating_sub(1).min(4);
+    (3_u64.saturating_mul(1_u64 << exponent)).min(30)
+}
+
+fn schedule_auto_reconnect(
+    app: AppHandle,
+    profile_id: String,
+    profile_name: String,
+    delay_seconds: u64,
+    generation: u64,
+) {
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(delay_seconds));
+
+        let still_enabled = app
+            .state::<AppState>()
+            .store
+            .lock()
+            .map(|store| {
+                store
+                    .profiles
+                    .get(&profile_id)
+                    .is_some_and(|profile| profile.auto_reconnect)
+                    && store.instances.values().any(|instance| {
+                        instance.view.profile_id == profile_id
+                            && !instance.user_requested_stop
+                            && !instance.reconnect_blocked
+                    })
+                    && store
+                        .reconnect_generations
+                        .get(&profile_id)
+                        .copied()
+                        .unwrap_or_default()
+                        == generation
+                    && !profile_has_running_instance(&store, &profile_id)
+            })
+            .unwrap_or(false);
+        if !still_enabled {
+            return;
+        }
+
+        if let Err(message) = start_profile_impl(
+            app.clone(),
+            profile_id.clone(),
+            StartOrigin::AutoReconnect(generation),
+        ) {
+            if message == AUTO_RECONNECT_CANCELLED {
+                return;
+            }
+            let _ = app.emit(
+                "vpn-autoconnect-error",
+                AutoConnectError {
+                    profile_id,
+                    profile_name,
+                    message: format!("自动重连失败：{message}"),
                 },
             );
         }
@@ -543,42 +777,93 @@ fn spawn_process_monitor(
 
         match status {
             Ok(Some(exit_status)) => {
-                let view = {
+                // Give stdout/stderr readers a brief chance to classify fatal
+                // authentication or certificate errors before retry policy is decided.
+                thread::sleep(Duration::from_millis(100));
+                let (view, reconnect) = {
                     let state = app.state::<AppState>();
                     let Ok(mut store) = state.store.lock() else {
                         return;
                     };
+                    let Some(instance) = store.instances.get(&instance_id) else {
+                        return;
+                    };
+                    let profile_id = instance.view.profile_id.clone();
+                    let profile_name = instance.view.profile_name.clone();
+                    let user_requested_stop = instance.user_requested_stop;
+                    let reconnect_blocked = instance.reconnect_blocked;
+                    let failure_message = instance.failure_message.clone();
+                    let auto_reconnect = !user_requested_stop
+                        && !reconnect_blocked
+                        && store
+                            .profiles
+                            .get(&profile_id)
+                            .is_some_and(|profile| profile.auto_reconnect);
+                    let delay_seconds = if auto_reconnect {
+                        let attempt = store
+                            .reconnect_attempts
+                            .entry(profile_id.clone())
+                            .and_modify(|attempt| *attempt = attempt.saturating_add(1))
+                            .or_insert(1);
+                        Some(auto_reconnect_delay_seconds(*attempt))
+                    } else {
+                        if user_requested_stop {
+                            store.reconnect_attempts.remove(&profile_id);
+                        }
+                        None
+                    };
+                    let generation = store
+                        .reconnect_generations
+                        .get(&profile_id)
+                        .copied()
+                        .unwrap_or_default();
+
                     let Some(instance) = store.instances.get_mut(&instance_id) else {
                         return;
                     };
-                    let was_stopping = instance.view.status == "disconnecting";
-                    let success = exit_status.success();
-                    instance.view.status = if success || was_stopping {
+                    instance.process_running = false;
+                    instance.view.status = if user_requested_stop || exit_status.success() {
                         "disconnected".to_string()
                     } else {
                         "failed".to_string()
                     };
-                    instance.view.message = match exit_status.code() {
-                        Some(code) => format!("进程已退出，代码 {code}"),
-                        None => "进程已终止".to_string(),
+                    instance.view.message = match delay_seconds {
+                        Some(delay) => format!("连接已中断，{delay} 秒后自动重连"),
+                        None => failure_message.unwrap_or_else(|| match exit_status.code() {
+                            Some(code) => format!("进程已退出，代码 {code}"),
+                            None => "进程已终止".to_string(),
+                        }),
                     };
                     instance.view.exit_code = exit_status.code();
                     instance.view.ended_at = Some(now_epoch());
-                    instance.view.clone()
+                    instance.view.revision = instance.view.revision.saturating_add(1);
+                    (
+                        instance.view.clone(),
+                        delay_seconds.map(|delay| (profile_id, profile_name, delay, generation)),
+                    )
                 };
                 let _ = fs::remove_file(&config_path);
                 emit_instance(&app, &view);
+                if let Some((profile_id, profile_name, delay_seconds, generation)) = reconnect {
+                    schedule_auto_reconnect(
+                        app.clone(),
+                        profile_id,
+                        profile_name,
+                        delay_seconds,
+                        generation,
+                    );
+                }
                 return;
             }
             Ok(None) => thread::sleep(Duration::from_millis(250)),
             Err(error) => {
-                update_instance(
+                record_instance_failure(
                     &app,
                     &instance_id,
-                    "failed",
                     format!("无法检查 VPN 进程：{error}"),
+                    false,
                 );
-                return;
+                thread::sleep(Duration::from_secs(1));
             }
         }
     });
@@ -600,12 +885,34 @@ fn list_profiles(state: State<'_, AppState>) -> Result<Vec<ProfileView>, String>
         .collect())
 }
 
+fn reserve_profile_mutation(app: &AppHandle, profile_id: &str) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut store = state
+        .store
+        .lock()
+        .map_err(|_| "内部运行状态已损坏".to_string())?;
+    if store.mutating_profiles.contains(profile_id) {
+        return Err("该配置正在被其他操作修改，请稍后重试".to_string());
+    }
+    if store.starting_profiles.contains(profile_id)
+        || profile_has_running_instance(&store, profile_id)
+    {
+        return Err("该配置正在连接，请先断开".to_string());
+    }
+    store.mutating_profiles.insert(profile_id.to_string());
+    bump_reconnect_generation(&mut store, profile_id);
+    Ok(())
+}
+
+fn release_profile_mutation(app: &AppHandle, profile_id: &str) {
+    let state = app.state::<AppState>();
+    if let Ok(mut store) = state.store.lock() {
+        store.mutating_profiles.remove(profile_id);
+    };
+}
+
 #[tauri::command]
-fn save_profile(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    mut input: SaveProfileInput,
-) -> Result<ProfileView, String> {
+fn save_profile(app: AppHandle, mut input: SaveProfileInput) -> Result<ProfileView, String> {
     if input.profile.id.trim().is_empty() {
         input.profile.id = Uuid::new_v4().to_string();
     }
@@ -621,85 +928,93 @@ fn save_profile(
     }
 
     let profile_id = input.profile.id.clone();
-    let was_stored = {
-        let store = lock_store(&state)?;
-        store.stored_secret_profiles.contains(&profile_id)
-    };
+    reserve_profile_mutation(&app, &profile_id)?;
+    let result = (|| -> Result<ProfileView, String> {
+        let was_stored = {
+            let state = app.state::<AppState>();
+            let store = lock_store(&state)?;
+            store.stored_secret_profiles.contains(&profile_id)
+        };
 
-    let mut password_from_keyring = None;
-    if input.remember_password {
-        if let Some(password) = password.as_deref() {
-            store_password(&profile_id, password)?;
-        } else if was_stored {
-            // An empty password while editing means keep the existing credential.
-        } else {
-            password_from_keyring = read_stored_password(&profile_id)?;
-            if password_from_keyring.is_none() {
-                return Err("请先输入密码，再保存到系统凭据库".to_string());
-            }
-        }
-    } else if was_stored {
-        delete_stored_password(&profile_id)?;
-    }
-
-    let view = {
-        let mut store = lock_store(&state)?;
-        if let Some(password) = password.or(password_from_keyring) {
-            store.secrets.insert(profile_id.clone(), password);
-        }
+        let mut password_from_keyring = None;
         if input.remember_password {
-            store.stored_secret_profiles.insert(profile_id.clone());
-        } else {
-            store.stored_secret_profiles.remove(&profile_id);
+            if let Some(password) = password.as_deref() {
+                store_password(&profile_id, password)?;
+            } else if was_stored {
+                // An empty password while editing means keep the existing credential.
+            } else {
+                password_from_keyring = read_stored_password(&profile_id)?;
+                if password_from_keyring.is_none() {
+                    return Err("请先输入密码，再保存到系统凭据库".to_string());
+                }
+            }
+        } else if was_stored {
+            delete_stored_password(&profile_id)?;
         }
-        store
-            .profiles
-            .insert(profile_id.clone(), input.profile.clone());
-        persist_profiles(&app, &store.profiles)?;
-        profile_view(
-            &input.profile,
-            store.secrets.contains_key(&profile_id),
-            store.stored_secret_profiles.contains(&profile_id),
-        )
-    };
 
-    publish_privilege_status(&app);
-    Ok(view)
+        let view = {
+            let state = app.state::<AppState>();
+            let mut store = lock_store(&state)?;
+            if let Some(password) = password.or(password_from_keyring) {
+                store.secrets.insert(profile_id.clone(), password);
+            }
+            if input.remember_password {
+                store.stored_secret_profiles.insert(profile_id.clone());
+            } else {
+                store.stored_secret_profiles.remove(&profile_id);
+            }
+            store
+                .profiles
+                .insert(profile_id.clone(), input.profile.clone());
+            persist_profiles(&app, &store.profiles)?;
+            profile_view(
+                &input.profile,
+                store.secrets.contains_key(&profile_id),
+                store.stored_secret_profiles.contains(&profile_id),
+            )
+        };
+
+        publish_privilege_status(&app);
+        Ok(view)
+    })();
+    release_profile_mutation(&app, &profile_id);
+    result
 }
 
 #[tauri::command]
-fn delete_profile(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    profile_id: String,
-) -> Result<(), String> {
-    let was_stored = {
-        let store = lock_store(&state)?;
-        let is_active = store.instances.values().any(|instance| {
-            instance.view.profile_id == profile_id
-                && matches!(
-                    instance.view.status.as_str(),
-                    "starting" | "connecting" | "connected" | "disconnecting"
-                )
-        });
-        if is_active {
-            return Err("该配置仍有运行中的连接，请先断开".to_string());
+fn delete_profile(app: AppHandle, profile_id: String) -> Result<(), String> {
+    reserve_profile_mutation(&app, &profile_id)?;
+    let result = (|| -> Result<(), String> {
+        let was_stored = {
+            let state = app.state::<AppState>();
+            let store = lock_store(&state)?;
+            if !store.profiles.contains_key(&profile_id) {
+                return Err("找不到指定配置".to_string());
+            }
+            store.stored_secret_profiles.contains(&profile_id)
+        };
+
+        if was_stored {
+            delete_stored_password(&profile_id)?;
         }
-        store.stored_secret_profiles.contains(&profile_id)
-    };
 
-    if was_stored {
-        delete_stored_password(&profile_id)?;
-    }
-
-    let mut store = lock_store(&state)?;
-    store.profiles.remove(&profile_id);
-    store.secrets.remove(&profile_id);
-    store.stored_secret_profiles.remove(&profile_id);
-    persist_profiles(&app, &store.profiles)?;
-    drop(store);
-    publish_privilege_status(&app);
-    Ok(())
+        let state = app.state::<AppState>();
+        let mut store = lock_store(&state)?;
+        store.profiles.remove(&profile_id);
+        store.secrets.remove(&profile_id);
+        store.stored_secret_profiles.remove(&profile_id);
+        store.reconnect_attempts.remove(&profile_id);
+        store.reconnect_generations.remove(&profile_id);
+        store
+            .instances
+            .retain(|_, instance| instance.view.profile_id != profile_id);
+        persist_profiles(&app, &store.profiles)?;
+        drop(store);
+        publish_privilege_status(&app);
+        Ok(())
+    })();
+    release_profile_mutation(&app, &profile_id);
+    result
 }
 
 #[tauri::command]
@@ -890,26 +1205,21 @@ fn start_privilege_keepalive(app: AppHandle) {
     let _ = app;
 }
 
-fn start_profile_impl(app: AppHandle, profile_id: String) -> Result<InstanceView, String> {
-    let (profile, password) = {
-        let state = app.state::<AppState>();
-        let store = state
-            .store
-            .lock()
-            .map_err(|_| "内部运行状态已损坏".to_string())?;
-        let profile = store
-            .profiles
-            .get(&profile_id)
-            .cloned()
-            .ok_or_else(|| "找不到指定配置".to_string())?;
-        let password = store
-            .secrets
-            .get(&profile_id)
-            .cloned()
-            .ok_or_else(|| "密码未保存在当前会话，请编辑配置并重新输入密码".to_string())?;
-        (profile, password)
-    };
+#[derive(Clone, Copy)]
+enum StartOrigin {
+    User,
+    Startup,
+    AutoReconnect(u64),
+}
 
+const AUTO_RECONNECT_CANCELLED: &str = "自动重连已取消";
+
+fn spawn_profile_process(
+    app: AppHandle,
+    profile: VpnProfile,
+    password: String,
+    profile_generation: u64,
+) -> Result<InstanceView, String> {
     #[cfg(unix)]
     if profile.use_sudo {
         if !sudo_engine_ready(&app) {
@@ -954,6 +1264,7 @@ fn start_profile_impl(app: AppHandle, profile_id: String) -> Result<InstanceView
     let child = Arc::new(Mutex::new(child));
     let view = InstanceView {
         id: instance_id.clone(),
+        profile_generation,
         profile_id: profile.id.clone(),
         profile_name: profile.name.clone(),
         adapter_name,
@@ -963,6 +1274,7 @@ fn start_profile_impl(app: AppHandle, profile_id: String) -> Result<InstanceView
         started_at: now_epoch(),
         ended_at: None,
         exit_code: None,
+        revision: 0,
     };
 
     {
@@ -971,15 +1283,23 @@ fn start_profile_impl(app: AppHandle, profile_id: String) -> Result<InstanceView
             .store
             .lock()
             .map_err(|_| "内部运行状态已损坏".to_string())?;
+        store
+            .instances
+            .retain(|_, instance| instance.view.profile_id != profile.id);
         store.instances.insert(
             instance_id.clone(),
             ManagedInstance {
                 view: view.clone(),
                 child: child.clone(),
+                process_running: true,
+                user_requested_stop: false,
+                reconnect_blocked: false,
+                failure_message: None,
             },
         );
     }
 
+    emit_instance(&app, &view);
     if let Some(stdout) = stdout {
         spawn_stream_reader(stdout, app.clone(), instance_id.clone(), "stdout");
     }
@@ -987,14 +1307,69 @@ fn start_profile_impl(app: AppHandle, profile_id: String) -> Result<InstanceView
         spawn_stream_reader(stderr, app.clone(), instance_id.clone(), "stderr");
     }
     spawn_process_monitor(app.clone(), instance_id, child, config_path);
-    emit_instance(&app, &view);
 
     Ok(view)
 }
 
+fn start_profile_impl(
+    app: AppHandle,
+    profile_id: String,
+    origin: StartOrigin,
+) -> Result<InstanceView, String> {
+    let (profile, password, profile_generation) = {
+        let state = app.state::<AppState>();
+        let mut store = state
+            .store
+            .lock()
+            .map_err(|_| "内部运行状态已损坏".to_string())?;
+        if store.mutating_profiles.contains(&profile_id) {
+            return Err("该配置正在编辑或删除，请稍后重试".to_string());
+        }
+        if store.starting_profiles.contains(&profile_id)
+            || profile_has_running_instance(&store, &profile_id)
+        {
+            return Err("该配置已有连接，请先断开后再连接".to_string());
+        }
+        let profile = store
+            .profiles
+            .get(&profile_id)
+            .cloned()
+            .ok_or_else(|| "找不到指定配置".to_string())?;
+        let password = store
+            .secrets
+            .get(&profile_id)
+            .cloned()
+            .ok_or_else(|| "密码未保存在当前会话，请编辑配置并重新输入密码".to_string())?;
+        let profile_generation = match origin {
+            StartOrigin::AutoReconnect(expected) => {
+                let current = store
+                    .reconnect_generations
+                    .get(&profile_id)
+                    .copied()
+                    .unwrap_or_default();
+                if current != expected {
+                    return Err(AUTO_RECONNECT_CANCELLED.to_string());
+                }
+                bump_reconnect_generation(&mut store, &profile_id)
+            }
+            StartOrigin::User | StartOrigin::Startup => {
+                bump_reconnect_generation(&mut store, &profile_id)
+            }
+        };
+        store.starting_profiles.insert(profile_id.clone());
+        (profile, password, profile_generation)
+    };
+
+    let result = spawn_profile_process(app.clone(), profile, password, profile_generation);
+    if let Ok(mut store) = app.state::<AppState>().store.lock() {
+        store.starting_profiles.remove(&profile_id);
+    }
+    result
+}
+
 #[tauri::command]
 fn start_profile(app: AppHandle, profile_id: String) -> Result<InstanceView, String> {
-    start_profile_impl(app, profile_id)
+    start_profile_impl(app, profile_id, StartOrigin::User)
 }
 
 #[tauri::command]
@@ -1002,7 +1377,41 @@ fn stop_instance(
     app: AppHandle,
     state: State<'_, AppState>,
     instance_id: String,
+    profile_id: Option<String>,
 ) -> Result<(), String> {
+    let instance_id = {
+        let store = lock_store(&state)?;
+        if store.instances.contains_key(&instance_id) {
+            instance_id
+        } else if let Some(profile_id) = profile_id {
+            let Some(instance) = store
+                .instances
+                .values()
+                .find(|instance| instance.view.profile_id == profile_id)
+            else {
+                return Ok(());
+            };
+            instance.view.id.clone()
+        } else {
+            return Err("找不到指定连接实例".to_string());
+        }
+    };
+
+    let already_stopped = {
+        let store = lock_store(&state)?;
+        !store
+            .instances
+            .get(&instance_id)
+            .ok_or_else(|| "找不到指定连接实例".to_string())?
+            .process_running
+    };
+    if already_stopped {
+        if let Some(view) = cancel_reconnect_for_stopped_instance(&app, &instance_id)? {
+            emit_instance(&app, &view);
+        }
+        return Ok(());
+    }
+
     let (child, pid, use_sudo, previous_status) = {
         let store = lock_store(&state)?;
         let profile_id = store
@@ -1019,9 +1428,6 @@ fn stop_instance(
             .instances
             .get(&instance_id)
             .ok_or_else(|| "找不到指定连接实例".to_string())?;
-        if matches!(instance.view.status.as_str(), "disconnected" | "failed") {
-            return Ok(());
-        }
         (
             instance.child.clone(),
             instance.view.pid,
@@ -1038,12 +1444,29 @@ fn stop_instance(
 
     let view = {
         let mut store = lock_store(&state)?;
+        let profile_id = {
+            let instance = store
+                .instances
+                .get(&instance_id)
+                .ok_or_else(|| "找不到指定连接实例".to_string())?;
+            if !instance.process_running {
+                drop(store);
+                if let Some(view) = cancel_reconnect_for_stopped_instance(&app, &instance_id)? {
+                    emit_instance(&app, &view);
+                }
+                return Ok(());
+            }
+            instance.view.profile_id.clone()
+        };
+        bump_reconnect_generation(&mut store, &profile_id);
         let instance = store
             .instances
             .get_mut(&instance_id)
             .ok_or_else(|| "找不到指定连接实例".to_string())?;
+        instance.user_requested_stop = true;
         instance.view.status = "disconnecting".to_string();
         instance.view.message = "正在断开连接".to_string();
+        instance.view.revision = instance.view.revision.saturating_add(1);
         instance.view.clone()
     };
     emit_instance(&app, &view);
@@ -1062,12 +1485,22 @@ fn stop_instance(
                 .status()
         };
         if !matches!(result, Ok(status) if status.success()) {
+            let process_already_stopped = {
+                let store = lock_store(&state)?;
+                store
+                    .instances
+                    .get(&instance_id)
+                    .is_none_or(|instance| !instance.process_running)
+            };
+            if process_already_stopped {
+                return Ok(());
+            }
             let fallback = child
                 .lock()
                 .map_err(|_| "无法访问 VPN 进程".to_string())?
                 .kill();
             if let Err(error) = fallback {
-                update_instance(
+                restore_instance_after_stop_failure(
                     &app,
                     &instance_id,
                     &previous_status,
@@ -1086,7 +1519,17 @@ fn stop_instance(
             .map_err(|_| "无法访问 VPN 进程".to_string())?
             .kill();
         if let Err(error) = result {
-            update_instance(
+            let process_already_stopped = {
+                let store = lock_store(&state)?;
+                store
+                    .instances
+                    .get(&instance_id)
+                    .is_none_or(|instance| !instance.process_running)
+            };
+            if process_already_stopped {
+                return Ok(());
+            }
+            restore_instance_after_stop_failure(
                 &app,
                 &instance_id,
                 &previous_status,
@@ -1115,13 +1558,9 @@ fn profile_has_active_instance(app: &AppHandle, profile_id: &str) -> bool {
         .store
         .lock()
         .map(|store| {
-            store.instances.values().any(|instance| {
-                instance.view.profile_id == profile_id
-                    && matches!(
-                        instance.view.status.as_str(),
-                        "starting" | "connecting" | "connected" | "disconnecting"
-                    )
-            })
+            store.starting_profiles.contains(profile_id)
+                || store.mutating_profiles.contains(profile_id)
+                || profile_has_running_instance(&store, profile_id)
         })
         .unwrap_or(false)
 }
@@ -1130,7 +1569,8 @@ fn attempt_auto_connect(app: &AppHandle, profile_id: String, profile_name: Strin
     if profile_has_active_instance(app, &profile_id) {
         return;
     }
-    if let Err(message) = start_profile_impl(app.clone(), profile_id.clone()) {
+    if let Err(message) = start_profile_impl(app.clone(), profile_id.clone(), StartOrigin::Startup)
+    {
         let _ = app.emit(
             "vpn-autoconnect-error",
             AutoConnectError {
@@ -1283,6 +1723,7 @@ mod tests {
             half_internet_routes: false,
             use_sudo: true,
             auto_connect: false,
+            auto_reconnect: true,
         }
     }
 
@@ -1293,11 +1734,16 @@ mod tests {
             .as_object_mut()
             .expect("profile should be an object")
             .remove("autoConnect");
+        value
+            .as_object_mut()
+            .expect("profile should be an object")
+            .remove("autoReconnect");
 
         let profile: VpnProfile =
             serde_json::from_value(value).expect("legacy profile should deserialize");
 
         assert!(!profile.auto_connect);
+        assert!(profile.auto_reconnect);
     }
 
     #[test]
@@ -1467,7 +1913,7 @@ mod tests {
     }
 
     #[test]
-    fn adapter_name_distinguishes_concurrent_instances() {
+    fn adapter_name_distinguishes_reconnections() {
         let profile = valid_profile();
 
         let first = make_adapter_name(&profile, "11111111-aaaa-bbbb-cccc-dddddddddddd");
@@ -1493,6 +1939,101 @@ mod tests {
         assert_eq!(value["instanceId"], "instance-1");
         assert_eq!(value["profileId"], "profile-1");
         assert_eq!(value["payload"]["event"], "cert_error");
+    }
+
+    #[test]
+    fn engine_state_mapping_preserves_terminal_states() {
+        assert_eq!(status_for_engine_state("resolving"), "connecting");
+        assert_eq!(status_for_engine_state("connected"), "connecting");
+        assert_eq!(status_for_engine_state("disconnecting"), "disconnecting");
+        assert_eq!(status_for_engine_state("down"), "disconnecting");
+    }
+
+    fn instance_view_with_status(status: &str) -> InstanceView {
+        InstanceView {
+            id: "instance-1".to_string(),
+            profile_generation: 1,
+            profile_id: "profile-1".to_string(),
+            profile_name: "Office VPN".to_string(),
+            adapter_name: "ofv-OfficeVPN-12345678".to_string(),
+            status: status.to_string(),
+            message: "initial".to_string(),
+            pid: 123,
+            started_at: 1,
+            ended_at: None,
+            exit_code: None,
+            revision: 0,
+        }
+    }
+
+    #[test]
+    fn tunnel_up_is_the_only_event_that_finishes_connecting() {
+        let mut view = instance_view_with_status("starting");
+
+        assert!(apply_instance_update(
+            &mut view,
+            status_for_engine_state("connected"),
+            "connected".to_string()
+        ));
+        assert_eq!(view.status, "connecting");
+        assert!(apply_instance_update(
+            &mut view,
+            "connected",
+            "已连接".to_string()
+        ));
+        assert_eq!(view.status, "connected");
+        assert_eq!(view.revision, 2);
+    }
+
+    #[test]
+    fn late_events_cannot_revive_stopping_or_terminal_instances() {
+        let mut stopping = instance_view_with_status("disconnecting");
+        assert!(!apply_instance_update(
+            &mut stopping,
+            "connected",
+            "late tunnel_up".to_string()
+        ));
+        assert_eq!(stopping.status, "disconnecting");
+
+        let mut failed = instance_view_with_status("failed");
+        assert!(!apply_instance_update(
+            &mut failed,
+            "connected",
+            "late log".to_string()
+        ));
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.revision, 0);
+    }
+
+    #[test]
+    fn auto_reconnect_uses_bounded_exponential_backoff() {
+        assert_eq!(auto_reconnect_delay_seconds(1), 3);
+        assert_eq!(auto_reconnect_delay_seconds(2), 6);
+        assert_eq!(auto_reconnect_delay_seconds(3), 12);
+        assert_eq!(auto_reconnect_delay_seconds(5), 30);
+        assert_eq!(auto_reconnect_delay_seconds(u32::MAX), 30);
+    }
+
+    #[test]
+    fn reconnect_generation_is_monotonic_and_serialized() {
+        let mut store = RuntimeStore::default();
+        assert_eq!(bump_reconnect_generation(&mut store, "profile-1"), 1);
+        assert_eq!(bump_reconnect_generation(&mut store, "profile-1"), 2);
+
+        let mut view = instance_view_with_status("starting");
+        view.profile_generation = 2;
+        let value = serde_json::to_value(view).expect("instance should serialize");
+        assert_eq!(value["profileGeneration"], 2);
+        assert_eq!(value["revision"], 0);
+    }
+
+    #[test]
+    fn legacy_engine_log_marks_tunnel_as_connected() {
+        assert_eq!(
+            fallback_status_from_log("INFO: Tunnel is up and running."),
+            Some(("connected", "已连接"))
+        );
+        assert_eq!(fallback_status_from_log("INFO: Authenticated."), None);
     }
 
     #[test]

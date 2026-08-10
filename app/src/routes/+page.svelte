@@ -44,6 +44,7 @@
     halfInternetRoutes: false,
     useSudo: true,
     autoConnect: false,
+    autoReconnect: true,
   });
 
   let profiles = $state<ProfileView[]>([]);
@@ -51,7 +52,6 @@
   let logs = $state<LogEvent[]>([]);
   let engine = $state<EngineInfo | null>(null);
   let selectedProfileId = $state("");
-  let selectedInstanceId = $state("");
   let draft = $state<VpnProfile>(blankProfile());
   let password = $state("");
   let rememberPassword = $state(false);
@@ -78,26 +78,55 @@
   const seenCertificateEvents = new Set<string>();
   const pendingCertificates = new Set<string>();
 
+  function isActive(status: InstanceStatus) {
+    return ["starting", "connecting", "connected", "disconnecting"].includes(
+      status,
+    );
+  }
+
+  function latestInstanceForProfile(profileId: string) {
+    return (
+      instances
+        .filter((instance) => instance.profileId === profileId)
+        .sort((left, right) => {
+          const generationDifference =
+            right.profileGeneration - left.profileGeneration;
+          if (generationDifference !== 0) return generationDifference;
+          const startedAtDifference = right.startedAt - left.startedAt;
+          if (startedAtDifference !== 0) return startedAtDifference;
+          return right.id.localeCompare(left.id);
+        })[0] ?? null
+    );
+  }
+
+  function latestInstancesForProfiles() {
+    return profiles.flatMap((entry) => {
+      const instance = latestInstanceForProfile(entry.profile.id);
+      return instance ? [instance] : [];
+    });
+  }
+
   let selectedProfile = $derived(
     profiles.find((entry) => entry.profile.id === selectedProfileId) ?? null,
   );
-  let profileInstances = $derived(
-    instances.filter((instance) => instance.profileId === selectedProfileId),
+  let selectedInstance = $derived(
+    latestInstanceForProfile(selectedProfileId),
   );
+  let latestInstances = $derived(latestInstancesForProfiles());
   let visibleLogs = $derived(
-    logs.filter(
-      (entry) => !selectedInstanceId || entry.instanceId === selectedInstanceId,
-    ),
+    selectedInstance
+      ? logs.filter((entry) => entry.instanceId === selectedInstance.id)
+      : [],
   );
   let activeCount = $derived(
-    instances.filter((instance) => isActive(instance.status)).length,
+    latestInstances.filter((instance) => isActive(instance.status)).length,
   );
   let connectedCount = $derived(
-    instances.filter((instance) => instance.status === "connected").length,
+    latestInstances.filter((instance) => instance.status === "connected").length,
   );
-
-  const isActive = (status: InstanceStatus) =>
-    ["starting", "connecting", "connected", "disconnecting"].includes(status);
+  let selectedConnectionActive = $derived(
+    selectedInstance ? isActive(selectedInstance.status) : false,
+  );
 
   const statusLabel: Record<InstanceStatus, string> = {
     starting: "启动中",
@@ -135,14 +164,30 @@
   }
 
   function upsertInstance(view: InstanceView) {
-    const index = instances.findIndex((instance) => instance.id === view.id);
-    if (index === -1) instances = [view, ...instances];
-    else instances = instances.map((instance, position) =>
-      position === index ? view : instance,
+    const current = instances.find(
+      (instance) => instance.profileId === view.profileId,
     );
-    if (!selectedInstanceId && view.profileId === selectedProfileId) {
-      selectedInstanceId = view.id;
+    if (
+      current &&
+      (view.profileGeneration < current.profileGeneration ||
+        (view.profileGeneration === current.profileGeneration &&
+          (view.id !== current.id || view.revision <= current.revision)))
+    ) {
+      return;
     }
+
+    const merged = [
+      ...instances.filter((instance) => instance.profileId !== view.profileId),
+      view,
+    ];
+    instances = merged.sort((left, right) => {
+      const generationDifference =
+        right.profileGeneration - left.profileGeneration;
+      if (generationDifference !== 0) return generationDifference;
+      const startedAtDifference = right.startedAt - left.startedAt;
+      if (startedAtDifference !== 0) return startedAtDifference;
+      return right.id.localeCompare(left.id);
+    });
   }
 
   function errorText(error: unknown) {
@@ -227,6 +272,7 @@
     busy = true;
     tofuError = "";
     try {
+      await waitForProfileToStop(prompt.profileId);
       const current = profiles.find(
         (entry) => entry.profile.id === prompt.profileId,
       );
@@ -246,7 +292,6 @@
       });
       upsertInstance(instance);
       selectedProfileId = prompt.profileId;
-      selectedInstanceId = instance.id;
       closeTofuPrompt();
       showSuccess("已信任服务器证书并重新连接");
     } catch (error) {
@@ -267,7 +312,7 @@
         invoke<PrivilegeStatus>("privilege_status"),
       ]);
       profiles = profileList;
-      instances = instanceList;
+      instanceList.forEach(upsertInstance);
       engine = engineState;
       privilegeStatus = currentPrivilegeStatus;
       if (
@@ -290,8 +335,6 @@
 
   function selectProfile(profileId: string) {
     selectedProfileId = profileId;
-    selectedInstanceId =
-      instances.find((instance) => instance.profileId === profileId)?.id ?? "";
   }
 
   function createProfile() {
@@ -302,7 +345,16 @@
   }
 
   function editProfile(view: ProfileView) {
-    draft = { ...view.profile, autoConnect: view.profile.autoConnect ?? false };
+    const instance = latestInstanceForProfile(view.profile.id);
+    if (instance && isActive(instance.status)) {
+      showError("请先断开这个配置的连接，再编辑配置");
+      return;
+    }
+    draft = {
+      ...view.profile,
+      autoConnect: view.profile.autoConnect ?? false,
+      autoReconnect: view.profile.autoReconnect ?? true,
+    };
     password = "";
     rememberPassword = Boolean(view.passwordStored);
     editing = true;
@@ -343,6 +395,11 @@
   }
 
   async function deleteProfile(view: ProfileView) {
+    const instance = latestInstanceForProfile(view.profile.id);
+    if (instance && isActive(instance.status)) {
+      showError("请先断开这个配置的连接，再删除配置");
+      return;
+    }
     if (!window.confirm(`确定删除“${view.profile.name}”吗？`)) return;
     busy = true;
     try {
@@ -362,6 +419,9 @@
   }
 
   async function startProfile(view: ProfileView) {
+    const currentInstance = latestInstanceForProfile(view.profile.id);
+    if (currentInstance && isActive(currentInstance.status)) return;
+
     if (view.profile.useSudo) {
       let currentPrivilegeStatus: PrivilegeStatus;
       try {
@@ -394,7 +454,6 @@
         profileId: view.profile.id,
       });
       upsertInstance(instance);
-      selectedInstanceId = instance.id;
       showSuccess("连接进程已启动");
     } catch (error) {
       showError(error);
@@ -404,10 +463,54 @@
   }
 
   async function stopInstance(instance: InstanceView) {
+    if (instance.status === "disconnecting") return;
+    busy = true;
     try {
-      await invoke("stop_instance", { instanceId: instance.id });
+      await invoke("stop_instance", {
+        instanceId: instance.id,
+        profileId: instance.profileId,
+      });
+      showSuccess("正在断开连接");
     } catch (error) {
       showError(error);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function waitForProfileToStop(profileId: string) {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const snapshot = await invoke<InstanceView[]>("list_instances");
+      snapshot.forEach(upsertInstance);
+      const instance = snapshot.find((entry) => entry.profileId === profileId);
+      if (!instance || !isActive(instance.status)) return instance ?? null;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 250));
+    }
+    throw new Error("等待旧连接断开超时，请确认进程状态后重试");
+  }
+
+  async function reconnectProfile(view: ProfileView, instance: InstanceView) {
+    if (busy || !isActive(instance.status) || instance.status === "disconnecting") {
+      return;
+    }
+
+    busy = true;
+    try {
+      await invoke("stop_instance", {
+        instanceId: instance.id,
+        profileId: instance.profileId,
+      });
+      await waitForProfileToStop(view.profile.id);
+      const nextInstance = await invoke<InstanceView>("start_profile", {
+        profileId: view.profile.id,
+      });
+      upsertInstance(nextInstance);
+      showSuccess("连接已重新启动");
+    } catch (error) {
+      showError(error);
+    } finally {
+      busy = false;
     }
   }
 
@@ -432,10 +535,9 @@
     }).format(new Date(timestamp * 1000));
   }
 
-  function profileActiveCount(profileId: string) {
-    return instances.filter(
-      (instance) => instance.profileId === profileId && isActive(instance.status),
-    ).length;
+  function profileHasActiveConnection(profileId: string) {
+    const instance = latestInstanceForProfile(profileId);
+    return instance ? isActive(instance.status) : false;
   }
 
   async function refreshAutostart() {
@@ -586,7 +688,7 @@
               <b>{item.profile.name}</b>
               <small>{item.profile.host}:{item.profile.port}</small>
             </span>
-            {#if profileActiveCount(item.profile.id) > 0}
+            {#if profileHasActiveConnection(item.profile.id)}
               <span class="active-pulse" title="连接运行中"></span>
             {/if}
           </button>
@@ -636,16 +738,37 @@
       <div class="topbar-actions">
         <button class="icon-button" title="刷新" onclick={refresh}>↻</button>
         {#if selectedProfile}
-          <button class="secondary-button" onclick={() => editProfile(selectedProfile!)}>
+          <button
+            class="secondary-button"
+            disabled={busy || selectedConnectionActive}
+            onclick={() => editProfile(selectedProfile!)}
+          >
             编辑配置
           </button>
-          <button
-            class="primary-button"
-            disabled={busy || !engine?.available}
-            onclick={() => startProfile(selectedProfile!)}
-          >
-            连接
-          </button>
+          {#if selectedConnectionActive && selectedInstance}
+            <button
+              class="secondary-button"
+              disabled={busy || selectedInstance.status === "disconnecting"}
+              onclick={() => reconnectProfile(selectedProfile!, selectedInstance!)}
+            >
+              重新连接
+            </button>
+            <button
+              class="primary-button disconnect-button"
+              disabled={busy || selectedInstance.status === "disconnecting"}
+              onclick={() => stopInstance(selectedInstance!)}
+            >
+              {selectedInstance.status === "disconnecting" ? "断开中…" : "断开"}
+            </button>
+          {:else}
+            <button
+              class="primary-button"
+              disabled={busy || !engine?.available}
+              onclick={() => startProfile(selectedProfile!)}
+            >
+              连接
+            </button>
+          {/if}
         {/if}
       </div>
     </header>
@@ -667,7 +790,7 @@
       </article>
       <article>
         <span class="metric-icon blue">◫</span>
-        <div><small>运行实例</small><strong>{activeCount}</strong></div>
+        <div><small>活动连接</small><strong>{activeCount}</strong></div>
       </article>
       <article>
         <span class="metric-icon amber">◇</span>
@@ -700,7 +823,8 @@
             <div><dt>Realm</dt><dd>{selectedProfile.profile.realm || "默认"}</dd></div>
             <div><dt>路由</dt><dd>{selectedProfile.profile.setRoutes ? "启用" : "禁用"}</dd></div>
             <div><dt>DNS</dt><dd>{selectedProfile.profile.setDns ? "启用" : "禁用"}</dd></div>
-            <div><dt>自动连接</dt><dd>{selectedProfile.profile.autoConnect ? "应用启动后" : "关闭"}</dd></div>
+            <div><dt>应用启动后自动连接</dt><dd>{selectedProfile.profile.autoConnect ? "启用" : "关闭"}</dd></div>
+            <div><dt>意外断线自动重连</dt><dd>{selectedProfile.profile.autoReconnect ? "启用" : "关闭"}</dd></div>
             <div><dt>系统凭据库</dt><dd>{selectedProfile.passwordStored ? "已保存密码" : "未保存"}</dd></div>
           </dl>
           <div class="card-actions">
@@ -709,7 +833,7 @@
             </button>
             <button
               class="danger-ghost"
-              disabled={busy}
+              disabled={busy || selectedConnectionActive}
               onclick={() => deleteProfile(selectedProfile!)}
             >
               删除
@@ -719,45 +843,29 @@
 
         <article class="panel instance-panel">
           <div class="panel-heading">
-            <div><small>进程管理</small><h2>连接实例</h2></div>
-            <span class="count-badge">{profileInstances.length}</span>
-          </div>
-          <div class="instance-list">
-            {#if profileInstances.length === 0}
-              <div class="empty-state compact">
-                <span>⌁</span><p>这个配置还没有启动过</p>
-              </div>
-            {:else}
-              {#each profileInstances as instance (instance.id)}
-                <button
-                  class:selected={selectedInstanceId === instance.id}
-                  class="instance-row"
-                  onclick={() => (selectedInstanceId = instance.id)}
-                >
-                  <span class="status-dot {instance.status}"></span>
-                  <span class="instance-copy">
-                    <b>{statusLabel[instance.status]}</b>
-                    <small>PID {instance.pid} · {instance.adapterName}</small>
-                  </span>
-                  <time>{formatTime(instance.startedAt)}</time>
-                  {#if isActive(instance.status)}
-                    <span
-                      class="stop-button"
-                      role="button"
-                      tabindex="0"
-                      onclick={(event) => {
-                        event.stopPropagation();
-                        void stopInstance(instance);
-                      }}
-                      onkeydown={(event) => {
-                        if (event.key === "Enter") void stopInstance(instance);
-                      }}
-                    >停止</span>
-                  {/if}
-                </button>
-              {/each}
+            <div><small>连接状态</small><h2>当前连接</h2></div>
+            {#if selectedInstance}
+              <span class="connection-status {selectedInstance.status}">
+                <span class="status-dot {selectedInstance.status}"></span>
+                {statusLabel[selectedInstance.status]}
+              </span>
             {/if}
           </div>
+          {#if selectedInstance}
+            <dl class="instance-facts">
+              <div><dt>PID</dt><dd>{selectedInstance.pid || "—"}</dd></div>
+              <div><dt>Adapter</dt><dd>{selectedInstance.adapterName || "—"}</dd></div>
+              <div><dt>开始时间</dt><dd>{formatTime(selectedInstance.startedAt)}</dd></div>
+              <div><dt>结束时间</dt><dd>{selectedInstance.endedAt ? formatTime(selectedInstance.endedAt) : "—"}</dd></div>
+              <div class="instance-message">
+                <dt>Message</dt><dd>{selectedInstance.message || "—"}</dd>
+              </div>
+            </dl>
+          {:else}
+            <div class="empty-state compact">
+              <span>⌁</span><p>这个配置还没有连接记录</p>
+            </div>
+          {/if}
         </article>
       </section>
 
@@ -765,7 +873,7 @@
         <div class="panel-heading log-heading">
           <div><small>诊断</small><h2>实时日志</h2></div>
           <div class="log-actions">
-            <span>{selectedInstanceId ? "已筛选当前实例" : "全部实例"}</span>
+            <span>{selectedInstance ? "已筛选当前连接" : "当前配置暂无连接"}</span>
             <button onclick={() => (logs = [])}>清空</button>
           </div>
         </div>
@@ -786,7 +894,7 @@
       <section class="panel welcome-state">
         <div class="welcome-icon"><span></span></div>
         <h2>创建第一个 VPN 配置</h2>
-        <p>保存服务器、账号、路由与 DNS 设置，然后从这里启动和管理多个连接实例。</p>
+        <p>保存服务器、账号、路由与 DNS 设置。一个配置一个连接，多个配置可同时连接。</p>
         <button class="primary-button" onclick={createProfile}>新建配置</button>
       </section>
     {/if}
@@ -927,11 +1035,12 @@
           <label class="toggle"><input type="checkbox" bind:checked={draft.useSudo} /><span></span><b>使用 sudo -n</b></label>
           <label class="toggle"><input type="checkbox" bind:checked={rememberPassword} /><span></span><b>保存密码到系统凭据库</b></label>
           <label class="toggle"><input type="checkbox" bind:checked={draft.autoConnect} /><span></span><b>应用启动后自动连接</b></label>
+          <label class="toggle"><input type="checkbox" bind:checked={draft.autoReconnect} /><span></span><b>意外断线自动重连</b></label>
         </div>
       </fieldset>
 
       <div class="modal-note">
-        自动连接要求密码已保存到系统凭据库。Windows 会继承应用管理员权限；macOS/Linux 无人值守连接需要受限 sudoers，或确保连接不依赖交互式 sudo。
+        “应用启动后自动连接”会在打开 App 后发起连接，要求密码已保存到系统凭据库；“意外断线自动重连”只处理非主动断开的连接。Windows 会继承应用管理员权限；macOS/Linux 无人值守连接需要受限 sudoers，或确保连接不依赖交互式 sudo。
       </div>
       <div class="modal-actions">
         <button type="button" class="secondary-button" disabled={busy} onclick={() => (editing = false)}>取消</button>
@@ -1025,9 +1134,11 @@
   .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; } .topbar p { margin: 0 0 4px; color: var(--brand); font-size: 9px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; } .topbar h1 { margin: 0; font-size: 23px; letter-spacing: -.025em; }
   .topbar-actions { display: flex; gap: 9px; align-items: center; }
   .primary-button, .secondary-button, .icon-button, .ghost-button, .danger-ghost { border-radius: 10px; cursor: pointer; font-size: 11px; font-weight: 750; transition: .16s ease; }
-  .primary-button { padding: 10px 18px; color: #03130d; background: var(--brand); box-shadow: 0 8px 24px rgba(45,204,145,.17); } .primary-button:hover { background: #79f3c3; transform: translateY(-1px); }
-  .secondary-button { padding: 9px 15px; border: 1px solid var(--line); color: #c7d2e3; background: var(--panel); } .secondary-button:hover { border-color: var(--line-strong); background: var(--panel-soft); }
+  .primary-button { padding: 10px 18px; color: #03130d; background: var(--brand); box-shadow: 0 8px 24px rgba(45,204,145,.17); } .primary-button:not(:disabled):hover { background: #79f3c3; transform: translateY(-1px); }
+  .primary-button.disconnect-button { color: #fff1f3; background: rgba(255,124,141,.82); box-shadow: 0 8px 24px rgba(255,124,141,.13); }
+  .secondary-button { padding: 9px 15px; border: 1px solid var(--line); color: #c7d2e3; background: var(--panel); } .secondary-button:not(:disabled):hover { border-color: var(--line-strong); background: var(--panel-soft); }
   .icon-button { width: 36px; height: 36px; border: 1px solid var(--line); color: var(--muted); background: var(--panel); font-size: 18px; }
+  .primary-button:disabled, .secondary-button:disabled, .ghost-button:disabled, .danger-ghost:disabled { cursor: not-allowed; opacity: .48; transform: none; }
   .notice { display: flex; align-items: center; gap: 10px; margin: -8px 0 18px; padding: 10px 13px; border-radius: 10px; font-size: 11px; } .notice span { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; } .notice b { font-weight: 650; } .notice button { margin-left: auto; color: inherit; background: transparent; cursor: pointer; font-size: 18px; }
   .notice.error { border: 1px solid rgba(255,124,141,.24); color: #ffc3cb; background: rgba(255,124,141,.08); } .notice.error span { background: rgba(255,124,141,.14); } .notice.success { border: 1px solid rgba(94,232,177,.2); color: #a8f3d5; background: rgba(94,232,177,.08); } .notice.success span { background: rgba(94,232,177,.14); }
   .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; } .metrics article { display: flex; align-items: center; gap: 13px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 13px; background: rgba(13,24,40,.74); } .metrics small, .metrics strong { display: block; } .metrics small { color: var(--muted); font-size: 10px; } .metrics strong { margin-top: 2px; font-size: 20px; }
@@ -1040,12 +1151,10 @@
   .endpoint { display: flex; align-items: center; gap: 12px; margin: 18px 0 16px; padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.02); } .endpoint-lock { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; color: var(--brand); background: var(--brand-soft); font-size: 11px; } .endpoint small, .endpoint strong { display: block; } .endpoint small { color: var(--muted); font-size: 9px; } .endpoint strong { margin-top: 4px; font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; }
   .profile-facts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 0; } .profile-facts div { min-width: 0; } .profile-facts dt { margin-bottom: 3px; color: var(--muted); font-size: 9px; } .profile-facts dd { overflow: hidden; margin: 0; color: #c9d4e4; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   .card-actions { display: flex; gap: 8px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); } .ghost-button, .danger-ghost { padding: 7px 10px; border: 1px solid var(--line); background: transparent; } .ghost-button { color: #b8c5d8; } .danger-ghost { margin-left: auto; color: var(--danger); } .ghost-button:hover, .danger-ghost:hover { background: rgba(255,255,255,.035); }
-  .count-badge { display: grid; place-items: center; min-width: 26px; height: 22px; border-radius: 8px; color: var(--muted); background: var(--panel-soft); font-size: 10px; font-weight: 700; }
-  .instance-list { display: flex; flex-direction: column; gap: 6px; max-height: 214px; margin-top: 14px; overflow-y: auto; }
-  .instance-row { display: grid; grid-template-columns: 10px minmax(0,1fr) auto auto; gap: 10px; align-items: center; width: 100%; padding: 10px; border: 1px solid transparent; border-radius: 10px; color: var(--text); background: rgba(255,255,255,.02); cursor: pointer; text-align: left; } .instance-row:hover, .instance-row.selected { border-color: var(--line-strong); background: rgba(255,255,255,.04); }
+  .connection-status { display: flex; gap: 6px; align-items: center; padding: 5px 8px; border-radius: 999px; color: var(--muted); background: var(--panel-soft); font-size: 9px; font-weight: 750; } .connection-status.connected { color: var(--brand); background: var(--brand-soft); } .connection-status.starting, .connection-status.connecting, .connection-status.disconnecting { color: var(--warning); background: rgba(246,200,108,.09); } .connection-status.failed { color: var(--danger); background: rgba(255,124,141,.08); }
   .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); } .status-dot.connected { background: var(--brand); box-shadow: 0 0 8px rgba(94,232,177,.65); } .status-dot.connecting, .status-dot.starting { background: var(--warning); } .status-dot.failed { background: var(--danger); }
-  .instance-copy { min-width: 0; } .instance-copy b, .instance-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .instance-copy b { font-size: 10px; } .instance-copy small { margin-top: 3px; color: var(--muted); font-family: monospace; font-size: 8px; } .instance-row time { color: var(--muted); font-size: 9px; }
-  .stop-button { padding: 5px 7px; border-radius: 7px; color: var(--danger); background: rgba(255,124,141,.08); font-size: 9px; font-weight: 750; }
+  .status-dot.disconnecting { background: var(--warning); }
+  .instance-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 18px 0 0; } .instance-facts div { min-width: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.02); } .instance-facts dt { margin-bottom: 5px; color: var(--muted); font-size: 9px; } .instance-facts dd { overflow: hidden; margin: 0; color: #c9d4e4; font: 10px/1.5 "SFMono-Regular", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; } .instance-facts .instance-message { grid-column: 1 / -1; } .instance-facts .instance-message dd { overflow-wrap: anywhere; white-space: normal; }
   .empty-state.compact { display: grid; place-items: center; padding: 44px 12px; color: var(--muted); } .empty-state.compact span { font-size: 24px; } .empty-state.compact p { margin: 8px 0 0; font-size: 10px; }
   .log-panel { overflow: hidden; } .log-heading { padding: 15px 18px 12px; } .log-actions { display: flex; gap: 10px; align-items: center; color: var(--muted); font-size: 9px; } .log-actions button { padding: 5px 8px; border-radius: 7px; color: #aebdd1; background: var(--panel-soft); cursor: pointer; font-size: 9px; }
   .terminal { height: 178px; overflow: auto; padding: 12px 16px 16px; border-top: 1px solid var(--line); background: rgba(2,8,15,.58); font: 10px/1.65 "SFMono-Regular", Consolas, monospace; } .terminal-empty { display: grid; height: 100%; place-items: center; color: #53637a; } .log-line { display: grid; grid-template-columns: 66px minmax(0,1fr); gap: 10px; color: #a9b8cb; } .log-line time { color: #4f6078; } .log-line.error-line span { color: #e4b2b9; }

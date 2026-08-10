@@ -467,17 +467,6 @@ static int on_ppp_if_up(struct tunnel *tunnel)
 		inet_ntop(AF_INET, &tunnel->ipv4.ip_addr,
 		          ip_str, sizeof(ip_str));
 		log_info("Assigned IP: %s\n", ip_str);
-		{
-			char dns1_str[INET_ADDRSTRLEN] = "";
-			char dns2_str[INET_ADDRSTRLEN] = "";
-
-			inet_ntop(AF_INET, &tunnel->ipv4.ns1_addr,
-			          dns1_str, sizeof(dns1_str));
-			inet_ntop(AF_INET, &tunnel->ipv4.ns2_addr,
-			          dns2_str, sizeof(dns2_str));
-			event_emit_tunnel_up(ip_str, dns1_str,
-			                     dns2_str);
-		}
 	}
 
 	/* Configure IP on the wintun adapter */
@@ -498,6 +487,20 @@ static int on_ppp_if_up(struct tunnel *tunnel)
 
 		if (ret)
 			log_warn("Could not configure DNS.\n");
+	}
+
+	{
+		char ip_str[INET_ADDRSTRLEN] = "";
+		char dns1_str[INET_ADDRSTRLEN] = "";
+		char dns2_str[INET_ADDRSTRLEN] = "";
+
+		inet_ntop(AF_INET, &tunnel->ipv4.ip_addr,
+		          ip_str, sizeof(ip_str));
+		inet_ntop(AF_INET, &tunnel->ipv4.ns1_addr,
+		          dns1_str, sizeof(dns1_str));
+		inet_ntop(AF_INET, &tunnel->ipv4.ns2_addr,
+		          dns2_str, sizeof(dns2_str));
+		event_emit_tunnel_up(ip_str, dns1_str, dns2_str);
 	}
 
 	return 0;
