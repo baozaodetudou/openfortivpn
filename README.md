@@ -20,6 +20,14 @@ state-aware connect/reconnect/disconnect actions and structured logs. Its
 desktop build compiles this repository's openfortivpn engine and bundles the
 resulting binary as an application resource.
 
+The manager also includes an optional authenticated HTTPS Web console for
+remote profile and connection management. It is disabled by default, uses a
+generated 256-bit token stored in the system credential store and does not
+expose administrator-password or first-use certificate approval remotely. See
+[`app/README.md`](app/README.md) and [`docs/linux.md`](docs/linux.md).
+Build, install, signing, release, upgrade and rollback procedures are documented
+in [`docs/release.md`](docs/release.md).
+
 ```shell
 cd app
 pnpm install

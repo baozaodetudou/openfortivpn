@@ -19,3 +19,4 @@ config.sub
 config.guess
 openfortivpn@.service
 /build/
+/.pnpm-store/

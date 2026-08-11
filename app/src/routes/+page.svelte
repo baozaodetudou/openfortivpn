@@ -8,6 +8,7 @@
   } from "@tauri-apps/plugin-autostart";
   import { onMount } from "svelte";
   import type {
+    AppExitBlocked,
     AutoConnectError,
     EngineInfo,
     InstanceStatus,
@@ -15,6 +16,9 @@
     LogEvent,
     PrivilegeStatus,
     ProfileView,
+    RemoteAccessError,
+    RemoteAccessStatus,
+    RemoteAccessUpdate,
     VpnEngineEvent,
     VpnProfile,
   } from "$lib/types";
@@ -75,6 +79,14 @@
   let privilegeBusy = $state(false);
   let privilegeError = $state("");
   let pendingPrivilegeProfileId = $state("");
+  let remoteAccess = $state<RemoteAccessStatus | null>(null);
+  let remoteSettingsOpen = $state(false);
+  let remoteEnabled = $state(false);
+  let remoteBindAddress = $state("127.0.0.1");
+  let remotePort = $state(18443);
+  let remoteToken = $state("");
+  let remoteBusy = $state(false);
+  let remoteError = $state("");
   const seenCertificateEvents = new Set<string>();
   const pendingCertificates = new Set<string>();
 
@@ -188,6 +200,19 @@
       if (startedAtDifference !== 0) return startedAtDifference;
       return right.id.localeCompare(left.id);
     });
+  }
+
+  function mergeLogs(entries: LogEvent[]) {
+    const merged = new Map<string, LogEvent>();
+    for (const entry of [...logs, ...entries]) {
+      merged.set(
+        `${entry.instanceId}:${entry.timestamp}:${entry.stream}:${entry.line}`,
+        entry,
+      );
+    }
+    logs = [...merged.values()]
+      .sort((left, right) => left.timestamp - right.timestamp)
+      .slice(-400);
   }
 
   function errorText(error: unknown) {
@@ -305,16 +330,20 @@
   async function refresh() {
     loading = true;
     try {
-      const [profileList, instanceList, engineState, currentPrivilegeStatus] = await Promise.all([
+      const [profileList, instanceList, logList, engineState, currentPrivilegeStatus, currentRemoteAccess] = await Promise.all([
         invoke<ProfileView[]>("list_profiles"),
         invoke<InstanceView[]>("list_instances"),
+        invoke<LogEvent[]>("list_logs", { instanceId: null, limit: 400 }),
         invoke<EngineInfo>("engine_info"),
         invoke<PrivilegeStatus>("privilege_status"),
+        invoke<RemoteAccessStatus>("remote_access_status"),
       ]);
       profiles = profileList;
       instanceList.forEach(upsertInstance);
+      mergeLogs(logList);
       engine = engineState;
       privilegeStatus = currentPrivilegeStatus;
+      remoteAccess = currentRemoteAccess;
       if (
         !privilegeInitialized &&
         currentPrivilegeStatus.required &&
@@ -575,6 +604,80 @@
     }
   }
 
+  function openRemoteSettings() {
+    remoteEnabled = remoteAccess?.enabled ?? false;
+    remoteBindAddress = remoteAccess?.bindAddress ?? "127.0.0.1";
+    remotePort = remoteAccess?.port ?? 18443;
+    remoteToken = "";
+    remoteError = "";
+    remoteSettingsOpen = true;
+  }
+
+  function closeRemoteSettings() {
+    if (remoteBusy) return;
+    remoteToken = "";
+    remoteError = "";
+    remoteSettingsOpen = false;
+  }
+
+  async function saveRemoteSettings(event: SubmitEvent) {
+    event.preventDefault();
+    if (remoteBusy) return;
+    remoteBusy = true;
+    remoteError = "";
+    try {
+      const update = await invoke<RemoteAccessUpdate>("configure_remote_access", {
+        input: {
+          enabled: remoteEnabled,
+          bindAddress: remoteBindAddress.trim(),
+          port: Number(remotePort),
+        },
+      });
+      remoteAccess = update.status;
+      remoteToken = update.token ?? "";
+      showSuccess(remoteEnabled ? "HTTPS 远程访问已启动" : "远程访问已关闭");
+      if (!update.token) closeRemoteSettings();
+    } catch (error) {
+      remoteError = errorText(error);
+    } finally {
+      remoteBusy = false;
+    }
+  }
+
+  async function rotateRemoteToken() {
+    if (remoteBusy || !window.confirm("更新令牌后，所有已登录的远程浏览器都需要重新登录。继续吗？")) return;
+    remoteBusy = true;
+    remoteError = "";
+    try {
+      const update = await invoke<RemoteAccessUpdate>("rotate_remote_access_token");
+      remoteAccess = update.status;
+      remoteToken = update.token ?? "";
+    } catch (error) {
+      remoteError = errorText(error);
+    } finally {
+      remoteBusy = false;
+    }
+  }
+
+  async function copyRemoteValue(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      showSuccess(`${label}已复制`);
+    } catch (error) {
+      remoteError = `复制失败：${errorText(error)}`;
+    }
+  }
+
+  async function openRemoteAccessUrl() {
+    if (!remoteAccess?.running) return;
+    try {
+      const { openUrl } = await import("@tauri-apps/plugin-opener");
+      await openUrl(remoteAccess.url);
+    } catch (error) {
+      remoteError = `无法打开浏览器：${errorText(error)}`;
+    }
+  }
+
   function closePrivilegeModal() {
     if (privilegeBusy) return;
     administratorPassword = "";
@@ -621,8 +724,11 @@
     void listen<InstanceView>("vpn-instance-changed", ({ payload }) => {
       upsertInstance(payload);
     }).then((unlisten) => unlisteners.push(unlisten));
+    void listen<ProfileView[]>("vpn-profiles-changed", ({ payload }) => {
+      profiles = payload;
+    }).then((unlisten) => unlisteners.push(unlisten));
     void listen<LogEvent>("vpn-log", ({ payload }) => {
-      logs = [...logs.slice(-399), payload];
+      mergeLogs([payload]);
     }).then((unlisten) => unlisteners.push(unlisten));
     void listen<VpnEngineEvent>("vpn-engine-event", ({ payload }) => {
       void handleEngineEvent(payload);
@@ -638,6 +744,18 @@
         pendingPrivilegeProfileId = "";
         privilegeModalOpen = false;
       }
+    }).then((unlisten) => unlisteners.push(unlisten));
+    void listen<RemoteAccessError>("remote-access-error", ({ payload }) => {
+      if (remoteAccess) remoteAccess = { ...remoteAccess, running: false };
+      showError(`远程访问服务异常：${payload.message}`);
+    }).then((unlisten) => unlisteners.push(unlisten));
+    void listen<RemoteAccessStatus>("remote-access-changed", ({ payload }) => {
+      remoteAccess = payload;
+    }).then((unlisten) => unlisteners.push(unlisten));
+    void listen<AppExitBlocked>("vpn-exit-blocked", ({ payload }) => {
+      privilegeError = payload.message;
+      privilegeModalOpen = Boolean(privilegeStatus?.required);
+      showError(payload.message);
     }).then((unlisten) => unlisteners.push(unlisten));
 
     return () => unlisteners.forEach((unlisten) => unlisten());
@@ -721,6 +839,11 @@
       <p class="settings-note">
         macOS/Linux 无人值守自动连接需要受限 sudoers，或确保连接过程不依赖交互式 sudo。
       </p>
+      <button class="remote-settings-button" onclick={openRemoteSettings}>
+        <span class:online={remoteAccess?.running} class="remote-dot"></span>
+        <b>HTTPS 远程控制</b>
+        <small>{remoteAccess?.running ? "运行中" : remoteAccess?.enabled ? "启动失败" : "未启用"}</small>
+      </button>
     </section>
 
     <div class="sidebar-footer">
@@ -900,6 +1023,56 @@
     {/if}
   </main>
 </div>
+
+{#if remoteSettingsOpen}
+  <div class="modal-backdrop remote-backdrop" role="presentation">
+    <form class="remote-modal" onsubmit={saveRemoteSettings}>
+      <div class="modal-heading">
+        <div><small>SECURE REMOTE ACCESS</small><h2>HTTPS 远程控制</h2></div>
+        <button type="button" disabled={remoteBusy} onclick={closeRemoteSettings}>×</button>
+      </div>
+
+      <p class="remote-description">
+        在浏览器中管理配置、连接、断开、重连和日志。服务始终使用 HTTPS 与 256 位访问令牌，默认只监听本机。
+      </p>
+      <label class="toggle remote-enable">
+        <input type="checkbox" bind:checked={remoteEnabled} disabled={remoteBusy} />
+        <span></span><b>启用远程控制服务</b>
+      </label>
+      <div class="remote-fields">
+        <label><span>监听地址</span><input required disabled={remoteBusy || !remoteEnabled} bind:value={remoteBindAddress} placeholder="127.0.0.1" /></label>
+        <label><span>HTTPS 端口</span><input required type="number" min="1" max="65535" disabled={remoteBusy || !remoteEnabled} bind:value={remotePort} /></label>
+      </div>
+      {#if remoteEnabled && remoteBindAddress !== "127.0.0.1" && remoteBindAddress !== "::1"}
+        <div class="remote-warning">当前地址可能允许局域网或公网访问。请同时配置主机防火墙，并优先通过 Tailscale、WireGuard 或受控反向代理暴露服务。</div>
+      {/if}
+      {#if remoteAccess?.enabled}
+        <dl class="remote-status">
+          <div><dt>服务状态</dt><dd class:ready={remoteAccess.running}>{remoteAccess.running ? "正在运行" : "未运行"}</dd></div>
+          <div><dt>访问地址</dt><dd>{remoteAccess.url}</dd></div>
+          <div><dt>证书 SHA-256</dt><dd>{remoteAccess.certificateFingerprint || "启用后生成"}</dd></div>
+        </dl>
+        <div class="remote-actions-row">
+          <button type="button" class="secondary-button" disabled={!remoteAccess.running || remoteBusy} onclick={openRemoteAccessUrl}>在浏览器打开</button>
+          <button type="button" class="secondary-button" disabled={remoteBusy} onclick={rotateRemoteToken}>更新访问令牌</button>
+        </div>
+      {/if}
+      {#if remoteToken}
+        <section class="token-reveal">
+          <strong>请立即保存新的访问令牌</strong>
+          <p>关闭窗口后不会再次显示；可随时生成新令牌。</p>
+          <code>{remoteToken}</code>
+          <button type="button" class="secondary-button" onclick={() => copyRemoteValue(remoteToken, "访问令牌")}>复制令牌</button>
+        </section>
+      {/if}
+      {#if remoteError}<div class="remote-error" role="alert">{remoteError}</div>{/if}
+      <div class="modal-actions">
+        <button type="button" class="secondary-button" disabled={remoteBusy} onclick={closeRemoteSettings}>{remoteToken ? "完成" : "取消"}</button>
+        <button type="submit" class="primary-button" disabled={remoteBusy}>{remoteBusy ? "正在应用…" : "保存并应用"}</button>
+      </div>
+    </form>
+  </div>
+{/if}
 
 {#if privilegeModalOpen && privilegeStatus?.required}
   <div class="modal-backdrop privilege-backdrop" role="presentation">
@@ -1129,6 +1302,9 @@
   .settings-toggle.disabled { cursor: wait; opacity: .58; }
   .settings-error { margin: 9px 0 0; color: #ffc3cb; font-size: 8px; line-height: 1.45; overflow-wrap: anywhere; }
   .settings-note { margin: 10px 0 0; padding-top: 9px; border-top: 1px solid var(--line); color: #71839b; font-size: 8px; line-height: 1.5; }
+  .remote-settings-button { display: grid; grid-template-columns: 8px minmax(0,1fr) auto; gap: 7px; align-items: center; width: 100%; margin-top: 10px; padding: 9px 0 0; border-top: 1px solid var(--line); color: #aebdd0; background: transparent; cursor: pointer; text-align: left; }
+  .remote-settings-button b { font-size: 9px; } .remote-settings-button small { color: #71839b; font-size: 8px; }
+  .remote-dot { width: 7px; height: 7px; border-radius: 50%; background: #52637a; } .remote-dot.online { background: var(--brand); box-shadow: 0 0 8px rgba(94,232,177,.6); }
   .sidebar-footer { display: flex; justify-content: space-between; padding: 17px 8px 0; color: #52637c; font-size: 9px; text-transform: uppercase; }
   .content { min-width: 0; padding: 30px 34px 36px; }
   .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; } .topbar p { margin: 0 0 4px; color: var(--brand); font-size: 9px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; } .topbar h1 { margin: 0; font-size: 23px; letter-spacing: -.025em; }
@@ -1171,6 +1347,23 @@
   .modal-note { margin-top: 14px; padding: 10px 11px; border-radius: 9px; color: #8292a9; background: rgba(112,167,255,.055); font-size: 9px; line-height: 1.55; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; }
   .privilege-backdrop { z-index: 50; }
+  .remote-backdrop { z-index: 55; }
+  .remote-modal { width: min(620px, 94vw); max-height: 92vh; overflow-y: auto; padding: 24px; border: 1px solid rgba(94,232,177,.28); border-radius: 17px; background: #0c1727; box-shadow: 0 30px 90px rgba(0,0,0,.55); }
+  .remote-description { margin: -4px 0 17px; color: #aebdd0; font-size: 10px; line-height: 1.7; }
+  .remote-enable { width: fit-content; margin-bottom: 15px; }
+  .remote-fields { display: grid; grid-template-columns: 1fr 150px; gap: 12px; }
+  .remote-fields label > span { display: block; margin: 0 0 6px 2px; color: #b8c4d5; font-size: 10px; font-weight: 650; }
+  .remote-fields input { width: 100%; padding: 10px 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: rgba(3,10,18,.56); font-size: 11px; }
+  .remote-fields input:disabled { opacity: .48; }
+  .remote-warning { margin-top: 12px; padding: 10px 11px; border: 1px solid rgba(246,200,108,.18); border-radius: 9px; color: #c8b98f; background: rgba(246,200,108,.06); font-size: 9px; line-height: 1.6; }
+  .remote-status { overflow: hidden; margin: 16px 0 0; border: 1px solid var(--line); border-radius: 10px; }
+  .remote-status div { display: grid; grid-template-columns: 110px minmax(0,1fr); gap: 12px; padding: 10px 12px; } .remote-status div + div { border-top: 1px solid var(--line); }
+  .remote-status dt { color: var(--muted); font-size: 9px; } .remote-status dd { overflow-wrap: anywhere; margin: 0; color: #cbd6e5; font: 9px/1.55 "SFMono-Regular", Consolas, monospace; } .remote-status dd.ready { color: var(--brand); }
+  .remote-actions-row { display: flex; gap: 8px; margin-top: 12px; }
+  .token-reveal { margin-top: 14px; padding: 13px; border: 1px solid rgba(94,232,177,.22); border-radius: 10px; background: rgba(94,232,177,.06); }
+  .token-reveal strong { color: #b7f6dc; font-size: 10px; } .token-reveal p { margin: 5px 0 9px; color: #83a79a; font-size: 9px; }
+  .token-reveal code { display: block; overflow-wrap: anywhere; margin-bottom: 10px; color: var(--brand); font-size: 11px; }
+  .remote-error { margin-top: 12px; padding: 10px 11px; border: 1px solid rgba(255,124,141,.24); border-radius: 9px; color: #ffc3cb; background: rgba(255,124,141,.08); font-size: 10px; }
   .privilege-modal { width: min(500px, 94vw); padding: 25px; border: 1px solid rgba(112,167,255,.3); border-radius: 17px; background: #0c1727; box-shadow: 0 30px 90px rgba(0,0,0,.55); }
   .privilege-icon { display: grid; width: 42px; height: 42px; place-items: center; margin-bottom: 16px; border-radius: 13px; color: #07111f; background: var(--blue); font-size: 17px; box-shadow: 0 8px 24px rgba(112,167,255,.17); }
   .privilege-heading small { color: var(--blue); font-size: 9px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }

@@ -83,3 +83,26 @@ export type PrivilegeStatus = {
   ready: boolean;
   platform: string;
 };
+
+export type RemoteAccessStatus = {
+  enabled: boolean;
+  running: boolean;
+  bindAddress: string;
+  port: number;
+  url: string;
+  certificateFingerprint: string;
+  tokenConfigured: boolean;
+};
+
+export type RemoteAccessUpdate = {
+  status: RemoteAccessStatus;
+  token: string | null;
+};
+
+export type RemoteAccessError = {
+  message: string;
+};
+
+export type AppExitBlocked = {
+  message: string;
+};

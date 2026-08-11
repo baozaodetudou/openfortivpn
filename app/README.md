@@ -75,12 +75,25 @@ administrator password again. The renewal task stops when the application
 exits. Sudo remains authoritative: its configured timestamp timeout, cache
 scope, revocation and other system policy continue to apply.
 
+Each Unix VPN process is placed in its own process group. Disconnect and
+application shutdown signal the complete group, wait for the engine to restore
+routes and DNS, and only then allow the manager to exit. Preventable exits are
+blocked when sudo authorization has expired. The native event-loop exit path
+also performs a synchronous last-chance cleanup; if authorization is unavailable
+there, the private recovery record remains so the next launch can identify and
+clean the exact process group after local privilege unlock.
+
 This administrator password is not the VPN password. The VPN password belongs
 to an individual profile and continues to be saved in macOS Keychain or Linux
 Secret Service when **Save password in system credential store** is enabled, or
 held in memory for only the current application session when it is disabled.
 The administrator password is used solely to unlock the sudo session described
 above.
+
+Stored VPN passwords are loaded on a background worker after the application
+window is created. The UI therefore remains responsive when macOS Keychain or
+Linux Secret Service requires a local user approval, and profile credential
+status is refreshed as soon as loading completes.
 
 If policy does not allow the manager to receive an administrator password, a
 purpose-built native privileged helper is the preferred deployment model once
@@ -123,3 +136,29 @@ provided by the VPN administrator through a separate trusted channel. As
 alternatives to the prompt, enter a verified SHA-256 fingerprint manually in
 the profile, or use a gateway certificate whose CA is already trusted by the
 client system.
+
+## HTTPS remote control
+
+Remote control is disabled by default and listens on `127.0.0.1:18443` when
+first enabled. The manager generates a local HTTPS certificate and a 256-bit
+access token. The certificate private key is stored with user-only file
+permissions and the token is stored in the operating system credential store,
+not in the JSON settings file.
+
+The authenticated browser console supports profile creation and editing,
+connect, disconnect, explicit reconnect, deletion, instance state and retained
+logs. API calls use same-origin HTTPS and Bearer authentication; permissive CORS
+is not enabled. The token is retained only in the browser tab's session storage.
+
+The desktop UI shows a certificate SHA-256 fingerprint and reveals a newly
+generated token only once. Verify the fingerprint through a trusted channel,
+store the token in a password manager and rotate it after suspected disclosure.
+Changing the listener IP regenerates the certificate; verify the new
+fingerprint before accepting it in another browser.
+Prefer a private overlay network or a hardened reverse proxy instead of binding
+directly to a public interface.
+
+For safety, remote clients cannot submit a computer administrator password or
+approve a newly observed VPN gateway certificate. Complete those operations on
+the host's desktop UI. See [`docs/linux.md`](../docs/linux.md) for Linux runtime,
+privilege and deployment guidance.

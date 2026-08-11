@@ -60,8 +60,8 @@ if (windows) {
   if (wintun) {
     copyFileSync(wintun, join(resourceDirectory, "wintun.dll"));
   } else {
-    console.warn(
-      "WINTUN_DLL is not set; add wintun.dll before running a Windows VPN connection.",
+    throw new Error(
+      "WINTUN_DLL is not set; refusing to create a Windows application that cannot connect.",
     );
   }
 }
