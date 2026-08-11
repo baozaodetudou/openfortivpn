@@ -10,6 +10,31 @@ On Windows, it uses an in-process PPP engine with
 
 It is compatible with Fortinet VPNs.
 
+OpenFortiVPN Manager v0.1.0
+---------------------------
+
+This repository also ships a complete graphical VPN manager for Linux, macOS
+and Windows, plus a headless Linux service. Download the installers from the
+[GitHub Releases page](https://github.com/baozaodetudou/openfortivpn/releases).
+
+| System | Download | Install |
+| --- | --- | --- |
+| macOS Apple Silicon | `macOS-arm64` DMG | Open the DMG and drag the app to `/Applications` |
+| macOS Intel | `macOS-x86_64` DMG | Open the DMG and drag the app to `/Applications` |
+| Windows x64 | MSI or NSIS EXE | Run the installer and accept the UAC prompt |
+| Linux desktop x64 | DEB | `sudo apt install ./openfortivpn-manager_*.deb` |
+| Linux server x64 | headless DEB or tar.gz | Install the DEB, or extract the tarball and run `sudo ./install.sh` |
+
+The first Linux/macOS connection asks once for the computer administrator
+password to install the restricted system helper. Normal connect, disconnect,
+reconnect, automatic reconnect and later application starts do not ask again.
+Each VPN profile has its own securely stored credential and at most one running
+instance; different profiles can connect concurrently.
+
+See the [中文用户指南](docs/user-guide.zh-CN.md), [desktop reference](app/README.md),
+[Linux headless guide](headless/README.md), [architecture](docs/architecture.md)
+and [build/release guide](docs/release.md).
+
 Desktop manager
 ---------------
 

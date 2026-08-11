@@ -191,19 +191,21 @@ jobs:
         run: |
           if test -z "$APPLE_CERTIFICATE" || test -z "$APPLE_CERTIFICATE_PASSWORD" || test -z "$KEYCHAIN_PASSWORD"; then
             if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-              echo "Tagged macOS releases require Apple signing secrets" >&2
-              exit 1
+              echo "::warning::Apple signing secrets are unavailable; publishing an ad-hoc signed prerelease"
             fi
             echo 'APPLE_SIGNING_IDENTITY=-' >> "$GITHUB_ENV"
+            echo 'APPLE_NOTARIZATION_ENABLED=0' >> "$GITHUB_ENV"
             exit 0
           fi
           if [[ "$GITHUB_REF" == refs/tags/* ]] && { test -z "$APPLE_ID" || test -z "$APPLE_PASSWORD" || test -z "$APPLE_TEAM_ID"; }; then
-            echo "Tagged macOS releases require notarization secrets" >&2
-            exit 1
+            echo "::warning::Apple notarization credentials are unavailable; the tagged build will not be notarized"
           fi
           if test -n "$APPLE_ID" && test -n "$APPLE_PASSWORD" && test -n "$APPLE_TEAM_ID"; then
             printf 'APPLE_ID=%s\nAPPLE_PASSWORD=%s\nAPPLE_TEAM_ID=%s\n' \
               "$APPLE_ID" "$APPLE_PASSWORD" "$APPLE_TEAM_ID" >> "$GITHUB_ENV"
+            echo 'APPLE_NOTARIZATION_ENABLED=1' >> "$GITHUB_ENV"
+          else
+            echo 'APPLE_NOTARIZATION_ENABLED=0' >> "$GITHUB_ENV"
           fi
           echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
@@ -266,7 +268,7 @@ jobs:
             test "$manager_archs" = "${{ matrix.cmake_arch }}"
             test "$engine_archs" = "${{ matrix.cmake_arch }}"
             test "$helper_archs" = "${{ matrix.cmake_arch }}"
-            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            if [[ "$GITHUB_REF" == refs/tags/* && "${APPLE_NOTARIZATION_ENABLED:-0}" == "1" ]]; then
               xcrun stapler validate "$app_path"
               spctl --assess --type execute --verbose "$app_path"
             fi
@@ -395,7 +397,7 @@ jobs:
         run: |
           if (-not $env:WINDOWS_CERTIFICATE -or -not $env:WINDOWS_CERTIFICATE_PASSWORD -or -not $env:WINDOWS_TIMESTAMP_URL) {
             if ($env:GITHUB_REF.StartsWith('refs/tags/')) {
-              throw 'Tagged Windows releases require Authenticode signing secrets'
+              Write-Warning 'Authenticode secrets are unavailable; publishing an unsigned prerelease'
             }
             exit 0
           }
@@ -444,7 +446,7 @@ jobs:
             Select-Object -First 1
           if (-not $mt) { throw 'mt.exe was not found' }
           & $mt.FullName -manifest app/src-tauri/windows-app-manifest.xml -validate_manifest
-          if ($env:GITHUB_REF.StartsWith('refs/tags/')) {
+          if ($env:GITHUB_REF.StartsWith('refs/tags/') -and $env:WINDOWS_CERTIFICATE_THUMBPRINT) {
             Get-ChildItem app/src-tauri/target/release/bundle -Recurse -File |
               Where-Object { $_.Extension -in '.exe', '.msi' } |
               ForEach-Object { Get-AuthenticodeSignature $_.FullName } |
@@ -633,6 +635,22 @@ jobs:
       - name: Publish one complete GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          name: OpenFortiVPN Manager ${{ github.ref_name }}
+          prerelease: ${{ vars.OFFICIAL_SIGNED_RELEASE != 'true' }}
+          body: |
+            ## 安装包 / Packages
+
+            本版本包含 macOS Apple Silicon、macOS Intel、Windows x64、Linux
+            桌面版以及 Linux headless 安装包。所有附件均由本标签的 CI 构建并
+            经过平台烟测，校验文件见 `SHA256SUMS-*.txt`。
+
+            > 当前仓库尚未配置 Apple Developer ID、公证和 Windows
+            > Authenticode secrets，因此该版本作为预发布提供。macOS 可能需要
+            > 手动允许应用，Windows 可能显示 SmartScreen 提示。正式分发前请配置
+            > 签名 secrets，并把仓库变量 `OFFICIAL_SIGNED_RELEASE` 设为 `true`。
+
+            使用说明见项目根目录 `README.md`、`docs/user-guide.zh-CN.md` 和
+            `headless/README.md`。
           files: |
             release-assets/**/*.deb
             release-assets/**/*.dmg

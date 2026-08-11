@@ -51,6 +51,12 @@ Every build uploads a platform artifact and a `SHA256SUMS-*.txt` file. A tag
 publishes the DMG, DEB, headless tarball, EXE, MSI and checksum files in one complete GitHub
 release; the unpacked macOS `.app` remains available as a workflow artifact.
 
+When the protected signing secrets are not configured, a `v*` tag still builds,
+installs and smoke-tests every package, but publishes the result as a GitHub
+prerelease. The release notes explicitly identify macOS as ad-hoc signed and
+Windows as unsigned. Set the repository variable `OFFICIAL_SIGNED_RELEASE=true`
+only after all signing and notarization secrets below have been configured.
+
 Before tagging, update the version in `app/src-tauri/tauri.conf.json`,
 `app/src-tauri/Cargo.toml` and `headless/Cargo.toml`; the release workflow derives
 the Debian metadata and artifact names from the headless crate version. Review
@@ -68,12 +74,13 @@ downloaded installers.
 
 ## Signing and trust
 
-The repository does not contain signing secrets. Tagged release jobs fail unless
-macOS has an Apple Developer ID Application certificate plus notarization
-credentials and Windows has an Authenticode certificate plus timestamp service.
-Manually dispatched unsigned or ad-hoc artifacts are for internal testing only:
-Gatekeeper rejects an unnotarized downloaded app and SmartScreen does not trust
-an unsigned installer.
+The repository does not contain signing secrets. Without them, tagged builds are
+published only as prereleases for internal testing: Gatekeeper may reject an
+unnotarized downloaded app and SmartScreen does not trust an unsigned installer.
+Production releases require a macOS Developer ID Application certificate plus
+notarization credentials and a Windows Authenticode certificate plus timestamp
+service. After configuring every secret, set the repository variable
+`OFFICIAL_SIGNED_RELEASE=true` so the workflow publishes a normal release.
 
 The release workflow expects these protected secrets:
 
