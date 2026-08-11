@@ -56,6 +56,12 @@ else()
     )
     set(PLATFORM_LIBS pthread)
 
+    # Match Autoconf's AC_USE_SYSTEM_EXTENSIONS so glibc declares GNU APIs
+    # such as memmem() and strcasestr() with their pointer return types.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_compile_definitions(_GNU_SOURCE)
+    endif()
+
     # Check for libutil (forkpty)
     include(CheckLibraryExists)
     check_library_exists(util forkpty "" HAVE_LIBUTIL)

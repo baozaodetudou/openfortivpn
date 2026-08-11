@@ -17,5 +17,5 @@ jobs:
       - uses: actions/checkout@v7
       - uses: codespell-project/actions-codespell@master
         with:
-          skip: .git,checkpatch.pl,spelling.txt,LICENSE.OpenSSL,app/pnpm-lock.yaml,app/src-tauri/Cargo.lock
+          skip: .git,checkpatch.pl,spelling.txt,LICENSE.OpenSSL,*pnpm-lock.yaml,*Cargo.lock
           ignore_words_list: anull,caf,synopsys,parms
