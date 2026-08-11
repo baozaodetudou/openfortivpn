@@ -1,0 +1,9 @@
+[package]
+name = "openfortivpn-manager-helper"
+version = "0.1.0"
+edition = "2021"
+description = "Narrow privileged lifecycle helper for OpenFortiVPN Manager"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+libc = "0.2"

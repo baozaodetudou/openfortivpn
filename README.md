@@ -5,7 +5,130 @@ openfortivpn is a client for PPP+TLS VPN tunnel services.
 It spawns a pppd process and operates the communication between the gateway and
 this process.
 
+On Windows, it uses an in-process PPP engine with
+[wintun](https://www.wintun.net/) instead of pppd.
+
 It is compatible with Fortinet VPNs.
+
+OpenFortiVPN Manager v0.1.0
+---------------------------
+
+This repository also ships a complete graphical VPN manager for Linux, macOS
+and Windows, plus a headless Linux service. Download the installers from the
+[GitHub Releases page](https://github.com/baozaodetudou/openfortivpn/releases).
+
+| System | Download | Install |
+| --- | --- | --- |
+| macOS Apple Silicon | `macOS-arm64` DMG | Open the DMG and drag the app to `/Applications` |
+| macOS Intel | `macOS-x86_64` DMG | Open the DMG and drag the app to `/Applications` |
+| Windows x64 | MSI or NSIS EXE | Run the installer and accept the UAC prompt |
+| Linux desktop x64 | DEB | `sudo apt install ./openfortivpn-manager_*.deb` |
+| Linux server x64 | headless DEB or tar.gz | Install the DEB, or extract the tarball and run `sudo ./install.sh` |
+
+The first Linux/macOS connection asks once for the computer administrator
+password to install the restricted system helper. Normal connect, disconnect,
+reconnect, automatic reconnect and later application starts do not ask again.
+Each VPN profile has its own securely stored credential and at most one running
+instance; different profiles can connect concurrently.
+
+See the [中文用户指南](docs/user-guide.zh-CN.md), [desktop reference](app/README.md),
+[Linux headless guide](headless/README.md), [architecture](docs/architecture.md)
+and [build/release guide](docs/release.md).
+
+Desktop manager
+---------------
+
+The [`app`](app/) directory contains a Tauri 2 + Svelte desktop manager for
+Linux, macOS and Windows. Each profile owns at most one connection, while
+different profiles can connect concurrently. It provides profile CRUD,
+state-aware connect/reconnect/disconnect actions and structured logs. Its
+desktop build compiles this repository's openfortivpn engine and bundles the
+resulting binary as an application resource.
+
+The manager also includes an optional authenticated HTTPS Web console for
+remote profile and connection management. It is disabled by default, uses a
+generated 256-bit token stored in the system credential store and does not
+expose administrator-password or first-use certificate approval remotely. See
+[`app/README.md`](app/README.md) and [`docs/linux.md`](docs/linux.md).
+Build, install, signing, release, upgrade and rollback procedures are documented
+in [`docs/release.md`](docs/release.md).
+
+Linux headless manager
+----------------------
+
+The [`headless`](headless/) directory contains a WebKit-free Linux CLI and
+systemd service for servers without a desktop. Its automatic installer deploys
+the manager and matching engine once; the root service then provides multiple
+profile instances, automatic reconnect and an HTTPS Web console where an
+operator enters the generated access token. The secure default binds only to
+`127.0.0.1:18443`; bind to an explicit private interface and add firewall rules
+before remote use.
+
+```shell
+./headless/scripts/install.sh
+sudo openfortivpn-manager-headless token
+```
+
+Release CI publishes both a Debian package and a self-contained Linux x86-64
+tar archive with `install.sh`. Full commands and API examples are in
+[`headless/README.md`](headless/README.md).
+
+```shell
+cd app
+pnpm install
+pnpm check
+pnpm tauri dev
+```
+
+Windows requires `wintun.dll`; set `WINTUN_DLL` to its full path before running
+the Tauri build.
+
+Profile settings are persisted in the operating system's application data
+directory. On Unix systems, the profile file is created with mode `0600`.
+Passwords are never written to that file. A user may instead save a password in
+macOS Keychain, Windows Credential Manager or Linux Secret Service; disabling
+that option keeps the password in memory for the current application session
+only.
+
+The manager can start when the user logs in on Linux, macOS and Windows. Each
+profile can also be marked to connect automatically after the application
+starts, provided that its password is available from the system credential
+store. On Linux and macOS, the manager asks once for the computer administrator
+password to install a root-owned, narrowly scoped system helper and matching VPN
+engine. The password is cleared immediately after submission and is not written
+to disk or a credential store. The helper accepts only validated manager VPN
+fields and fixed start/stop operations, while the generated sudoers rule grants
+no shell, arbitrary command, engine or unrestricted `kill` access. After that
+one-time installation, cold starts, connect, disconnect, auto-connect and
+automatic reconnect no longer prompt. Updating or removing the helper still
+requires administrator authorization.
+
+Unexpected disconnects can be retried per profile with bounded backoff. A
+manual disconnect never enters that retry path, and active profiles cannot be
+edited or deleted until their connection has stopped.
+
+The computer administrator password is separate from each profile's VPN
+password and is used only for the helper installation. VPN passwords continue
+to be stored per profile in the system credential store or held only for the
+current application session. An engine-only `NOPASSWD` rule is not enough to
+safely manage the complete process lifecycle; do not compensate with
+unrestricted `kill`, arbitrary commands, shells or writable wrapper scripts. On Windows, the
+application instead requests UAC elevation once at startup and its child
+processes inherit that access, so this administrator-password dialog is not
+shown. See [`app/README.md`](app/README.md) for details.
+
+When a first connection encounters a self-signed certificate or another
+certificate that the operating system does not trust, the desktop manager uses
+the engine's `cert_error` event to display the certificate's SHA-256 fingerprint.
+This is a trust-on-first-use (TOFU) prompt: the fingerprint is saved to the
+profile and the connection is retried only after the user explicitly confirms
+it. The application never silently trusts a certificate. When possible, compare
+the displayed fingerprint with one supplied by the VPN administrator over a
+separate trusted channel. A fingerprint can also be entered manually, or the
+gateway can use a certificate issued by a trusted CA. See
+[`app/README.md`](app/README.md#certificate-trust-tofu) for the complete flow.
+Automatic connections use the same checks and never accept an unknown or
+changed certificate automatically.
 
 Usage
 -----
@@ -137,6 +260,63 @@ sudo port install openfortivpn
 
 A more complete overview can be obtained from [repology](https://repology.org/project/openfortivpn/versions).
 
+### Windows
+
+Windows support uses [wintun](https://www.wintun.net/) (a lightweight TUN
+driver from the WireGuard project) instead of pppd. PPP negotiation is handled
+in-process.
+
+**Requirements:**
+* Windows 10 or later
+* Administrator privileges (for TUN adapter and route management)
+* [wintun.dll](https://www.wintun.net/) in the same directory as `openfortivpn.exe`
+  or in the system PATH
+
+**Building with MinGW-w64 (MSYS2):**
+
+1. Install [MSYS2](https://www.msys2.org/) and open a MinGW64 shell.
+2. Install dependencies:
+   ```shell
+   pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-openssl mingw-w64-x86_64-ninja
+   ```
+3. Build:
+   ```shell
+   mkdir build && cd build
+   cmake .. -G Ninja
+   ninja
+   ```
+
+**Building with MSVC:**
+
+1. Install [Visual Studio](https://visualstudio.microsoft.com/) with C/C++ workload.
+2. Install OpenSSL via [vcpkg](https://vcpkg.io/):
+   ```shell
+   vcpkg install openssl:x64-windows
+   ```
+3. Build:
+   ```shell
+   mkdir build && cd build
+   cmake .. -DCMAKE_TOOLCHAIN_FILE=[vcpkg root]/scripts/buildsystems/vcpkg.cmake
+   cmake --build . --config Release
+   ```
+
+**Running:**
+
+Download `wintun.dll` from https://www.wintun.net/ and place it next to
+`openfortivpn.exe`, then run from an **Administrator** command prompt:
+
+```shell
+openfortivpn vpn-gateway:8443 --username=foo
+```
+
+For multiple Windows tunnels, use a unique adapter name for each instance:
+
+```shell
+openfortivpn vpn-gateway:8443 --username=foo --pppd-ifname=office-vpn
+```
+
+The adapter name is restricted to ASCII letters, digits, `-` and `_`.
+
 ### Building and installing from source
 
 For other distros, you'll need to build and install from source:
@@ -201,13 +381,18 @@ Running as root?
 
 openfortivpn needs elevated privileges at three steps during tunnel set up:
 
-* when spawning a `/usr/sbin/pppd` process;
+* when spawning a `/usr/sbin/pppd` process (Linux/macOS) or creating a TUN
+  adapter (Windows);
 * when setting IP routes through VPN (when the tunnel is up);
-* when adding nameservers to `/etc/resolv.conf` (when the tunnel is up).
+* when adding nameservers to `/etc/resolv.conf` (Linux/macOS) or configuring
+  DNS via netsh (Windows).
 
-For these reasons, you need to use `sudo openfortivpn`.
+On **Linux/macOS**, you need to use `sudo openfortivpn`.
 If you need it to be usable by non-sudoer users, you might consider adding an
 entry in `/etc/sudoers` or a file under `/etc/sudoers.d`.
+
+On **Windows**, run openfortivpn from an Administrator command prompt or
+PowerShell.
 
 For example:
 ```shell

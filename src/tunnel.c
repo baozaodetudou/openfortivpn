@@ -27,6 +27,7 @@
  */
 
 #include "tunnel.h"
+#include "event.h"
 #include "http.h"
 #include "log.h"
 #include "userinput.h"
@@ -111,6 +112,10 @@ static int ofv_append_varr(struct ofv_varr *p, const char *x)
 
 static int on_ppp_if_up(struct tunnel *tunnel)
 {
+	char ip_str[INET_ADDRSTRLEN] = "0.0.0.0";
+	char dns1_str[INET_ADDRSTRLEN] = "0.0.0.0";
+	char dns2_str[INET_ADDRSTRLEN] = "0.0.0.0";
+
 	log_info("Interface %s is UP.\n", tunnel->ppp_iface);
 
 	{
@@ -137,6 +142,13 @@ static int on_ppp_if_up(struct tunnel *tunnel)
 		ipv4_add_nameservers_to_resolv_conf(tunnel);
 	}
 
+	inet_ntop(AF_INET, &tunnel->ipv4.ip_addr,
+	          ip_str, sizeof(ip_str));
+	inet_ntop(AF_INET, &tunnel->ipv4.ns1_addr,
+	          dns1_str, sizeof(dns1_str));
+	inet_ntop(AF_INET, &tunnel->ipv4.ns2_addr,
+	          dns2_str, sizeof(dns2_str));
+	event_emit_tunnel_up(ip_str, dns1_str, dns2_str);
 	log_info("Tunnel is up and running.\n");
 
 #if HAVE_SYSTEMD
@@ -153,6 +165,7 @@ static int on_ppp_if_down(struct tunnel *tunnel)
 #endif
 
 	log_info("Setting %s interface down.\n", tunnel->ppp_iface);
+	event_emit("tunnel_down", "\"reason\":\"interface_down\"");
 
 	if (tunnel->config->set_routes) {
 		log_info("Restoring routes...\n");
@@ -907,6 +920,9 @@ static int ssl_verify_cert(struct tunnel *tunnel)
 		goto free_cert;
 	}
 
+	/* Allow GUI clients to offer an explicit trust-on-first-use flow. */
+	event_emit_cert_error(digest_str, "verification_failed");
+
 	subj = X509_get_subject_name(cert);
 
 	log_error("Gateway certificate validation failed, and the certificate digest is not in the local whitelist. If you trust it, rerun with:\n");
@@ -1364,12 +1380,14 @@ int run_tunnel(struct vpn_config *config)
 	};
 
 	// Step 0: get gateway host IP
+	event_emit("state_change", "\"state\":\"resolving\"");
 	log_debug("Resolving gateway host ip\n");
 	ret = get_gateway_host_ip(&tunnel);
 	if (ret)
 		goto err_tunnel;
 
 	// Step 1: open a TLS connection to the gateway
+	event_emit("state_change", "\"state\":\"connecting_tls\"");
 	log_debug("Establishing TLS connection\n");
 	ret = ssl_connect(&tunnel);
 	if (ret)
@@ -1378,6 +1396,7 @@ int run_tunnel(struct vpn_config *config)
 
 	// Step 2: connect to the HTTP interface and authenticate to get a
 	// cookie
+	event_emit("state_change", "\"state\":\"authenticating\"");
 	if (config->cookie)
 		ret = auth_set_cookie(&tunnel, config->cookie);
 	else
@@ -1391,6 +1410,7 @@ int run_tunnel(struct vpn_config *config)
 	log_info("Authenticated.\n");
 	log_debug("Cookie: %s\n", tunnel.cookie);
 
+	event_emit("state_change", "\"state\":\"allocating\"");
 	ret = auth_request_vpn_allocation(&tunnel);
 	if (ret != 1) {
 		log_error("VPN allocation request failed (%s).\n",
@@ -1400,6 +1420,7 @@ int run_tunnel(struct vpn_config *config)
 	}
 	log_info("Remote gateway has allocated a VPN.\n");
 
+	event_emit("state_change", "\"state\":\"configuring\"");
 	ret = ssl_connect(&tunnel);
 	if (ret)
 		goto err_tunnel;
@@ -1415,12 +1436,14 @@ int run_tunnel(struct vpn_config *config)
 	}
 
 	// Step 4: run a pppd process
+	event_emit("state_change", "\"state\":\"creating_adapter\"");
 	log_debug("Establishing the tunnel\n");
 	ret = pppd_run(&tunnel);
 	if (ret)
 		goto err_tunnel;
 
 	// Step 5: ask gateway to start tunneling
+	event_emit("state_change", "\"state\":\"tunneling\"");
 	log_debug("Switch to tunneling mode\n");
 	ret = http_send(&tunnel,
 	                "GET /remote/sslvpn-tunnel HTTP/1.1\r\n"
@@ -1438,6 +1461,7 @@ int run_tunnel(struct vpn_config *config)
 	log_debug("Starting IO through the tunnel\n");
 	io_loop(&tunnel);
 
+	event_emit("state_change", "\"state\":\"disconnecting\"");
 	log_debug("Disconnecting\n");
 	if (tunnel.state == STATE_UP)
 		if (tunnel.on_ppp_if_down != NULL)

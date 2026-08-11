@@ -1,0 +1,10 @@
+Package: openfortivpn-manager-headless
+Version: 0.1.0
+Section: net
+Priority: optional
+Architecture: amd64
+Depends: ppp, systemd
+Maintainer: baozaodetudou
+Description: Headless HTTPS and CLI manager for multiple OpenFortiVPN tunnels
+ Provides a systemd service, Bearer-token Web console, profile management,
+ concurrent split-tunnel instances and automatic reconnect.

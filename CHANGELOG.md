@@ -14,6 +14,19 @@ Releases
 This high level changelog is usually updated when a release is tagged.
 On the master branch there may be changes that are not (yet) described here.
 
+### OpenFortiVPN Manager 0.1.0
+
+* [+] add a Tauri desktop manager for Linux, macOS and Windows
+* [+] support concurrent VPN profiles with one instance per profile
+* [+] add connect, reconnect, disconnect, delete and bounded automatic retry
+* [+] add one-time restricted helper installation on Linux and macOS
+* [+] store VPN passwords in the operating-system credential store
+* [+] discover self-signed certificate fingerprints through an explicit TOFU flow
+* [+] add application autostart and per-profile automatic connection
+* [+] add authenticated HTTPS remote control and a Linux headless systemd service
+* [+] publish macOS arm64/x86-64, Windows x64 and Linux x86-64 packages in CI
+* [-] prevent preformatted event JSON from being interpreted as a format string
+
 ### 1.24.1
 
 * [-] fix regression where the `plugin` was not passed to pppd
