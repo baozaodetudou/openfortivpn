@@ -81,9 +81,8 @@ static int wintun_create(struct tunnel *tunnel)
 
 	if (!wt_api_loaded) {
 		if (wintun_load(&wt_api) != 0) {
-			log_error("Failed to load wintun.dll. Please ensure "
-			          "wintun.dll is in the application directory "
-			          "or system PATH.\n");
+			log_error("Failed to load wintun.dll.\n");
+			log_error("Please ensure wintun.dll is in the application directory or system PATH.\n");
 			return 1;
 		}
 		wt_api_loaded = 1;

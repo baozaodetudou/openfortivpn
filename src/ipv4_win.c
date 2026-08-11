@@ -471,9 +471,8 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 	 * the gateway-provided suffix into a shell command; that would turn
 	 * untrusted server data into command-line input.
 	 */
-	if (tunnel->ipv4.dns_suffix) {
+	if (tunnel->ipv4.dns_suffix)
 		log_warn("Connection-specific DNS suffix configuration is not supported on Windows.\n");
-	}
 
 	/* Lower the interface metric so VPN DNS is preferred */
 	snprintf(cmd, sizeof(cmd),

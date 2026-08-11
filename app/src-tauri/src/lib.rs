@@ -1431,9 +1431,9 @@ fn sudo_engine_ready(app: &AppHandle) -> bool {
     )
 }
 
-fn privilege_status_value(app: &AppHandle, ready: bool) -> PrivilegeStatus {
+fn privilege_status_value(_app: &AppHandle, ready: bool) -> PrivilegeStatus {
     #[cfg(unix)]
-    let required = has_sudo_profiles(app);
+    let required = has_sudo_profiles(_app);
     #[cfg(windows)]
     let required = false;
 

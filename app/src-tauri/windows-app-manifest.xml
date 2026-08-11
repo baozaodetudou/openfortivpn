@@ -3,7 +3,7 @@
     type="win32"
     name="com.baozaodetudou.openfortivpn"
     version="0.1.0.0"
-    processorArchitecture="*"
+    processorArchitecture="amd64"
   />
   <dependency>
     <dependentAssembly>

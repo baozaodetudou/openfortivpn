@@ -170,6 +170,10 @@ jobs:
             echo "Tagged macOS releases require notarization secrets" >&2
             exit 1
           fi
+          if test -n "$APPLE_ID" && test -n "$APPLE_PASSWORD" && test -n "$APPLE_TEAM_ID"; then
+            printf 'APPLE_ID=%s\nAPPLE_PASSWORD=%s\nAPPLE_TEAM_ID=%s\n' \
+              "$APPLE_ID" "$APPLE_PASSWORD" "$APPLE_TEAM_ID" >> "$GITHUB_ENV"
+          fi
           echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
@@ -194,9 +198,6 @@ jobs:
           CMAKE_PREFIX_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/openssl@3' || '' }}
           OPENSSL_ROOT_DIR: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/openssl@3' || '' }}
           PKG_CONFIG_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/openssl@3/lib/pkgconfig' || '' }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: pnpm tauri build --bundles ${{ matrix.bundles }}
 
       - name: Verify platform bundle
@@ -224,7 +225,7 @@ jobs:
             dpkg-deb -f "$deb" Depends | grep -q 'ppp'
             dpkg-deb -f "$deb" Depends | grep -q 'sudo'
             package_name=$(dpkg-deb -f "$deb" Package)
-            sudo apt-get install -y "$deb"
+            sudo apt-get install -y "$PWD/$deb"
             engine=$(dpkg -L "$package_name" | grep '/bin/openfortivpn$' | head -1)
             app_binary=$(command -v openfortivpn-manager)
             test -x "$engine"
