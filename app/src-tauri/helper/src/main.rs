@@ -3,7 +3,9 @@ use std::env;
 use std::ffi::{CStr, CString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::ffi::OsStrExt;
+#[cfg(target_os = "macos")]
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -403,11 +405,11 @@ fn process_executable_identity(pid: i32) -> Result<(PathBuf, u64, u64), String> 
         .map_err(|error| format!("无法读取进程 {pid} 的可执行文件：{error}"))?;
 
     #[cfg(target_os = "macos")]
-    let metadata_path = &path;
+    let metadata_path = path.clone();
     #[cfg(not(target_os = "macos"))]
-    let metadata_path = Path::new(&format!("/proc/{pid}/exe"));
+    let metadata_path = PathBuf::from(format!("/proc/{pid}/exe"));
 
-    let metadata = fs::metadata(metadata_path)
+    let metadata = fs::metadata(&metadata_path)
         .map_err(|error| format!("无法读取进程 {pid} 的可执行文件身份：{error}"))?;
     Ok((path, metadata.dev(), metadata.ino()))
 }
