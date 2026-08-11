@@ -80,18 +80,21 @@ if (process.platform === "darwin" && process.env.APPLE_SIGNING_IDENTITY) {
 }
 
 if (windows && process.env.OPENFORTIVPN_ALLOW_MISSING_ENGINE !== "1") {
-  const wintunCandidates = [
-    process.env.WINTUN_DLL,
-    join(repositoryDirectory, "vendor", "wintun", "bin", "amd64", "wintun.dll"),
-    join(buildDirectory, "wintun.dll"),
-  ].filter(Boolean);
-  const wintun = wintunCandidates.find(existsSync);
-  if (wintun) {
-    copyFileSync(wintun, join(resourceDirectory, "wintun.dll"));
-  } else {
-    throw new Error(
-      "WINTUN_DLL is not set; refusing to create a Windows application that cannot connect.",
-    );
+  const bundledWintun = join(resourceDirectory, "wintun.dll");
+  if (!existsSync(bundledWintun)) {
+    const wintunCandidates = [
+      process.env.WINTUN_DLL,
+      join(repositoryDirectory, "vendor", "wintun", "bin", "amd64", "wintun.dll"),
+      join(buildDirectory, "wintun.dll"),
+    ].filter(Boolean);
+    const wintun = wintunCandidates.find(existsSync);
+    if (wintun) {
+      copyFileSync(wintun, bundledWintun);
+    } else {
+      throw new Error(
+        "WINTUN_DLL is not set; refusing to create a Windows application that cannot connect.",
+      );
+    }
   }
 }
 
