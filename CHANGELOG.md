@@ -14,6 +14,11 @@ Releases
 This high level changelog is usually updated when a release is tagged.
 On the master branch there may be changes that are not (yet) described here.
 
+### OpenFortiVPN Manager 0.1.1
+
+* [-] replace the placeholder application artwork with an original VPN tunnel
+  icon across macOS, Windows, Linux and the embedded web UI
+
 ### OpenFortiVPN Manager 0.1.0
 
 * [+] add a Tauri desktop manager for Linux, macOS and Windows

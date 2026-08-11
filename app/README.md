@@ -27,6 +27,18 @@ Windows additionally needs `wintun.dll`; set `WINTUN_DLL` to its full path and
 the build script will copy it next to `openfortivpn.exe`. The packaged Windows
 application requests administrator privileges through its application manifest.
 
+## Branding and icons
+
+`app-icon.png` is the 1024×1024 transparent master artwork. Regenerate the
+macOS ICNS, Windows ICO and platform PNG files from the application directory:
+
+```shell
+pnpm tauri icon app-icon.png --output src-tauri/icons
+```
+
+The embedded web UI favicon is generated from the same master so installed
+packages and browser surfaces use one consistent product identity.
+
 ## Profiles and credentials
 
 Ordinary profile fields are persisted in the operating system's application
