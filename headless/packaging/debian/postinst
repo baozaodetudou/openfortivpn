@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+  /usr/local/sbin/openfortivpn-manager-headless install \
+    --engine /usr/local/libexec/openfortivpn-manager-headless/openfortivpn \
+    --quiet
+fi

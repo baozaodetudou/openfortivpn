@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(unix)]
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs;
@@ -7,7 +9,7 @@ use std::fs;
 use std::io::Write;
 use std::io::{BufRead, BufReader, Read};
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 #[cfg(windows)]
@@ -334,6 +336,10 @@ fn profile_view(profile: &VpnProfile, has_secret: bool, password_stored: bool) -
 }
 
 fn resolve_engine(app: &AppHandle) -> PathBuf {
+    // Development builds may point at a locally-built engine. Release builds
+    // deliberately ignore this environment variable because the engine can be
+    // copied into a root-owned location during helper installation.
+    #[cfg(debug_assertions)]
     if let Some(path) = env::var_os("OPENFORTIVPN_BIN") {
         return PathBuf::from(path);
     }
@@ -375,6 +381,134 @@ fn resolve_engine(app: &AppHandle) -> PathBuf {
         }
         PathBuf::from("openfortivpn")
     }
+}
+
+#[cfg(unix)]
+fn resolve_bundled_helper(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .resource_dir()
+        .map(|directory| directory.join("bin").join("openfortivpn-manager-helper"))
+        .map_err(|error| format!("无法定位应用资源目录：{error}"))
+}
+
+#[cfg(unix)]
+const SUDO_EXECUTABLE: &str = "/usr/bin/sudo";
+
+#[cfg(unix)]
+fn bundled_engine_for_install(app: &AppHandle) -> Result<PathBuf, String> {
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("无法定位应用资源目录：{error}"))?;
+    #[cfg(windows)]
+    let candidate = resource_dir.join("bin").join("openfortivpn.exe");
+    #[cfg(not(windows))]
+    let candidate = resource_dir.join("bin").join("openfortivpn");
+    let metadata = fs::symlink_metadata(&candidate)
+        .map_err(|error| format!("应用包内缺少 VPN 引擎 {}：{error}", candidate.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "应用包内 VPN 引擎必须是普通文件且不能是符号链接：{}",
+            candidate.display()
+        ));
+    }
+    Ok(candidate)
+}
+
+#[cfg(target_os = "macos")]
+fn verify_macos_app_signature() -> Result<(), String> {
+    let executable = env::current_exe().map_err(|error| format!("无法定位当前应用：{error}"))?;
+    let bundle = executable
+        .ancestors()
+        .find(|path| path.extension().and_then(|value| value.to_str()) == Some("app"))
+        .ok_or_else(|| "当前程序不在 macOS .app 包内，拒绝安装系统 helper".to_string())?;
+    let status = Command::new("/usr/bin/codesign")
+        .args(["--verify", "--deep", "--strict"])
+        .arg(bundle)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| format!("无法校验应用签名：{error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("应用签名校验失败，拒绝安装系统 helper；请重新安装可信发行包".to_string())
+    }
+}
+
+#[cfg(unix)]
+fn file_sha256(path: &std::path::Path) -> Result<[u8; 32], String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("无法读取系统组件 {}：{error}", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("无法校验系统组件 {}：{error}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(digest.finalize().into())
+}
+
+#[cfg(unix)]
+fn installed_payload_matches(bundled: &std::path::Path, installed: &std::path::Path) -> bool {
+    let bundled_metadata = fs::symlink_metadata(bundled);
+    let installed_metadata = fs::symlink_metadata(installed);
+    let (Ok(bundled_metadata), Ok(installed_metadata)) = (bundled_metadata, installed_metadata)
+    else {
+        return false;
+    };
+    if bundled_metadata.file_type().is_symlink()
+        || !bundled_metadata.is_file()
+        || installed_metadata.file_type().is_symlink()
+        || !installed_metadata.is_file()
+        || installed_metadata.uid() != 0
+        || installed_metadata.mode() & 0o022 != 0
+        || bundled_metadata.len() != installed_metadata.len()
+    {
+        return false;
+    }
+    matches!(
+        (file_sha256(bundled), file_sha256(installed)),
+        (Ok(expected), Ok(actual)) if expected == actual
+    )
+}
+
+#[cfg(unix)]
+fn installed_components_match_bundle(app: &AppHandle) -> bool {
+    let Ok(helper) = resolve_bundled_helper(app) else {
+        return false;
+    };
+    let Ok(engine) = bundled_engine_for_install(app) else {
+        return false;
+    };
+    installed_payload_matches(&helper, &installed_helper_path())
+        && installed_payload_matches(&engine, &installed_engine_path())
+}
+
+#[cfg(all(unix, target_os = "macos"))]
+fn installed_helper_path() -> PathBuf {
+    PathBuf::from("/Library/PrivilegedHelperTools/com.baozaodetudou.openfortivpn.helper")
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn installed_helper_path() -> PathBuf {
+    PathBuf::from("/usr/local/libexec/openfortivpn-manager/helper")
+}
+
+#[cfg(all(unix, target_os = "macos"))]
+fn installed_engine_path() -> PathBuf {
+    PathBuf::from("/Library/PrivilegedHelperTools/com.baozaodetudou.openfortivpn.engine")
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn installed_engine_path() -> PathBuf {
+    PathBuf::from("/usr/local/libexec/openfortivpn-manager/openfortivpn")
 }
 
 fn make_adapter_name(profile: &VpnProfile, instance_id: &str) -> String {
@@ -535,7 +669,13 @@ fn process_group_commands(process_group_id: u32) -> Option<Vec<String>> {
 #[cfg(unix)]
 fn find_record_process_group(record: &RuntimeProcessRecord, rows: &[(u32, String)]) -> Option<u32> {
     rows.iter().find_map(|(group, command)| {
-        (command.contains(&record.engine_path) && command.contains(&record.config_path))
+        if !command.contains(&record.engine_path) {
+            return None;
+        }
+        rows.iter()
+            .any(|(candidate_group, candidate_command)| {
+                candidate_group == group && candidate_command.contains(&record.config_path)
+            })
             .then_some(*group)
     })
 }
@@ -661,14 +801,15 @@ fn cleanup_stale_runtime_processes(app: &AppHandle) -> Result<(), String> {
             return Err("无法确定上次遗留 VPN 进程组，请保留现场并检查运行目录".to_string());
         }
         if process_group_matches_record(&record) {
-            let process_group = format!("-{}", record.process_group_id);
-            let status = Command::new("sudo")
-                .args(["-n", "kill", "-TERM", "--"])
-                .arg(process_group)
+            let status = Command::new(SUDO_EXECUTABLE)
+                .arg("-n")
+                .arg(installed_helper_path())
+                .arg("stop")
+                .arg(record.process_group_id.to_string())
                 .status()
                 .map_err(|error| format!("无法清理上次遗留的 VPN 进程：{error}"))?;
             if !status.success() {
-                return Err("无法清理上次遗留的 VPN 进程，请重新解锁管理员权限".to_string());
+                return Err("无法清理上次遗留的 VPN 进程，请重新安装系统 helper".to_string());
             }
             let deadline = Instant::now() + Duration::from_secs(15);
             while Instant::now() < deadline && process_group_matches_record(&record) {
@@ -695,6 +836,18 @@ fn profile_has_running_instance(store: &RuntimeStore, profile_id: &str) -> bool 
         .instances
         .values()
         .any(|instance| instance.view.profile_id == profile_id && instance.process_running)
+}
+
+fn profile_connection_in_progress(store: &RuntimeStore, profile_id: &str) -> bool {
+    store.starting_profiles.contains(profile_id) || profile_has_running_instance(store, profile_id)
+}
+
+fn automatic_retry_allowed(
+    user_requested_stop: bool,
+    reconnect_blocked: bool,
+    auto_reconnect_enabled: bool,
+) -> bool {
+    !user_requested_stop && !reconnect_blocked && auto_reconnect_enabled
 }
 
 fn bump_reconnect_generation(store: &mut RuntimeStore, profile_id: &str) -> u64 {
@@ -1050,16 +1203,25 @@ fn schedule_auto_reconnect(
                 .lock()
                 .ok()
                 .and_then(|mut store| {
+                    let current_generation = store
+                        .reconnect_generations
+                        .get(&profile_id)
+                        .copied()
+                        .unwrap_or_default();
                     let should_retry =
                         !app.state::<AppState>().shutting_down.load(Ordering::SeqCst)
+                            && current_generation == generation
                             && store
                                 .profiles
                                 .get(&profile_id)
                                 .is_some_and(|profile| profile.auto_reconnect)
                             && store.instances.values().any(|instance| {
                                 instance.view.profile_id == profile_id
-                                    && !instance.user_requested_stop
-                                    && !instance.reconnect_blocked
+                                    && automatic_retry_allowed(
+                                        instance.user_requested_stop,
+                                        instance.reconnect_blocked,
+                                        true,
+                                    )
                             })
                             && !profile_has_running_instance(&store, &profile_id);
                     if !should_retry {
@@ -1071,12 +1233,7 @@ fn schedule_auto_reconnect(
                         .and_modify(|attempt| *attempt = attempt.saturating_add(1))
                         .or_insert(1);
                     let delay = auto_reconnect_delay_seconds(*attempt);
-                    let generation = store
-                        .reconnect_generations
-                        .get(&profile_id)
-                        .copied()
-                        .unwrap_or_default();
-                    Some((delay, generation))
+                    Some((delay, current_generation))
                 });
             if let Some((delay, generation)) = retry {
                 schedule_auto_reconnect(app, profile_id, profile_name, delay, generation);
@@ -1124,12 +1281,14 @@ fn spawn_process_monitor(
                     let user_requested_stop = instance.user_requested_stop;
                     let reconnect_blocked = instance.reconnect_blocked;
                     let failure_message = instance.failure_message.clone();
-                    let auto_reconnect = !user_requested_stop
-                        && !reconnect_blocked
-                        && store
+                    let auto_reconnect = automatic_retry_allowed(
+                        user_requested_stop,
+                        reconnect_blocked,
+                        store
                             .profiles
                             .get(&profile_id)
-                            .is_some_and(|profile| profile.auto_reconnect);
+                            .is_some_and(|profile| profile.auto_reconnect),
+                    );
                     let delay_seconds = if auto_reconnect {
                         let attempt = store
                             .reconnect_attempts
@@ -1228,9 +1387,7 @@ fn reserve_profile_mutation(app: &AppHandle, profile_id: &str) -> Result<(), Str
     if store.mutating_profiles.contains(profile_id) {
         return Err("该配置正在被其他操作修改，请稍后重试".to_string());
     }
-    if store.starting_profiles.contains(profile_id)
-        || profile_has_running_instance(&store, profile_id)
-    {
+    if profile_connection_in_progress(&store, profile_id) {
         return Err("该配置正在连接，请先断开".to_string());
     }
     store.mutating_profiles.insert(profile_id.to_string());
@@ -1417,12 +1574,14 @@ fn has_sudo_profiles(app: &AppHandle) -> bool {
 
 #[cfg(unix)]
 fn sudo_engine_ready(app: &AppHandle) -> bool {
-    let engine = resolve_engine(app);
+    if !installed_components_match_bundle(app) {
+        return false;
+    }
     matches!(
-        Command::new("sudo")
+        Command::new(SUDO_EXECUTABLE)
             .arg("-n")
-            .arg(engine)
-            .arg("--version")
+            .arg(installed_helper_path())
+            .arg("check")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1472,11 +1631,30 @@ fn publish_privilege_status(app: &AppHandle) -> PrivilegeStatus {
 }
 
 #[cfg(unix)]
-fn authenticate_sudo(password: &mut String) -> Result<(), String> {
-    // With no terminal attached, sudo scopes its timestamp to this app's parent
-    // process ID. Later sudo children from the same app can reuse that session.
-    let mut child = Command::new("sudo")
-        .args(["-S", "-p", "", "-v"])
+fn install_privileged_helper(app: &AppHandle, password: &mut String) -> Result<(), String> {
+    let helper = resolve_bundled_helper(app)?;
+    let engine = bundled_engine_for_install(app)?;
+    if !helper.is_file() {
+        return Err(format!("应用包内缺少权限 helper：{}", helper.display()));
+    }
+    if fs::symlink_metadata(&helper)
+        .map(|metadata| metadata.file_type().is_symlink() || !metadata.is_file())
+        .unwrap_or(true)
+    {
+        return Err(format!(
+            "应用包内权限 helper 必须是普通文件且不能是符号链接：{}",
+            helper.display()
+        ));
+    }
+    #[cfg(target_os = "macos")]
+    verify_macos_app_signature()?;
+
+    let mut child = Command::new(SUDO_EXECUTABLE)
+        .args(["-S", "-p", ""])
+        .arg(&helper)
+        .arg("install")
+        .arg("--engine")
+        .arg(&engine)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1496,11 +1674,16 @@ fn authenticate_sudo(password: &mut String) -> Result<(), String> {
 
     let output = child
         .wait_with_output()
-        .map_err(|error| format!("无法等待 sudo 验证结果：{error}"))?;
+        .map_err(|error| format!("无法等待 helper 安装结果：{error}"))?;
     if output.status.success() {
         Ok(())
     } else {
-        Err("管理员密码验证失败，或当前用户没有 sudo 权限".to_string())
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if detail.is_empty() {
+            "管理员密码验证失败，或系统 helper 安装失败".to_string()
+        } else {
+            format!("系统 helper 安装失败：{detail}")
+        })
     }
 }
 
@@ -1515,12 +1698,12 @@ fn unlock_privileges(app: AppHandle, mut password: String) -> Result<PrivilegeSt
     let result = if password.is_empty() {
         Err("请输入电脑管理员密码".to_string())
     } else {
-        authenticate_sudo(&mut password).and_then(|()| {
+        install_privileged_helper(&app, &mut password).and_then(|()| {
             if sudo_engine_ready(&app) {
                 cleanup_stale_runtime_processes(&app)?;
                 Ok(set_privilege_ready(&app, true, true))
             } else {
-                Err("sudo 已完成验证，但当前用户无权运行 openfortivpn".to_string())
+                Err("helper 已安装，但免密权限校验失败".to_string())
             }
         })
     };
@@ -1541,15 +1724,7 @@ fn start_privilege_keepalive(app: AppHandle) {
             continue;
         }
 
-        let refreshed = matches!(
-            Command::new("sudo")
-                .args(["-n", "-v"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status(),
-            Ok(status) if status.success()
-        ) || sudo_engine_ready(&app);
+        let refreshed = sudo_engine_ready(&app);
         if !refreshed {
             set_privilege_ready(&app, false, true);
         }
@@ -1574,13 +1749,15 @@ fn terminate_unregistered_process_group(
     use_sudo: bool,
     engine: &std::path::Path,
 ) -> bool {
-    let process_group = format!("-{pid}");
     let result = if use_sudo {
-        Command::new("sudo")
-            .args(["-n", "kill", "-TERM", "--"])
-            .arg(process_group)
+        Command::new(SUDO_EXECUTABLE)
+            .arg("-n")
+            .arg(installed_helper_path())
+            .arg("stop")
+            .arg(pid.to_string())
             .status()
     } else {
+        let process_group = format!("-{pid}");
         Command::new("kill")
             .args(["-TERM", "--"])
             .arg(process_group)
@@ -1627,7 +1804,7 @@ fn spawn_profile_process(
     if profile.use_sudo {
         if !sudo_engine_ready(&app) {
             set_privilege_ready(&app, false, true);
-            return Err("管理员权限尚未解锁，请先输入电脑管理员密码".to_string());
+            return Err("系统 VPN helper 尚未安装，请先完成一次安装".to_string());
         }
         set_privilege_ready(&app, true, true);
     }
@@ -1635,7 +1812,13 @@ fn spawn_profile_process(
     let instance_id = Uuid::new_v4().to_string();
     let adapter_name = make_adapter_name(&profile, &instance_id);
     let config_path = write_runtime_config(&app, &profile, &password, &instance_id, &adapter_name)?;
-    let engine = resolve_engine(&app);
+    let bundled_engine = resolve_engine(&app);
+    #[cfg(unix)]
+    let process_engine = if profile.use_sudo {
+        installed_engine_path()
+    } else {
+        bundled_engine.clone()
+    };
 
     #[cfg(unix)]
     let mut runtime_record = RuntimeProcessRecord {
@@ -1643,7 +1826,7 @@ fn spawn_profile_process(
         profile_id: profile.id.clone(),
         pid: 0,
         process_group_id: 0,
-        engine_path: engine.to_string_lossy().into_owned(),
+        engine_path: process_engine.to_string_lossy().into_owned(),
         config_path: config_path.to_string_lossy().into_owned(),
     };
     #[cfg(unix)]
@@ -1659,24 +1842,28 @@ fn spawn_profile_process(
 
     #[cfg(unix)]
     let mut command = if profile.use_sudo {
-        let mut command = Command::new("sudo");
-        command.arg("-n").arg(&engine);
+        let mut command = Command::new(SUDO_EXECUTABLE);
+        command
+            .arg("-n")
+            .arg(installed_helper_path())
+            .arg("run")
+            .arg(&config_path);
         command
     } else {
-        Command::new(&engine)
+        let mut command = Command::new(&bundled_engine);
+        command.arg("--json-events").arg("-c").arg(&config_path);
+        command
     };
 
     #[cfg(windows)]
     let mut command = {
-        let mut command = Command::new(&engine);
+        let mut command = Command::new(&bundled_engine);
         command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        command.arg("--json-events").arg("-c").arg(&config_path);
         command
     };
 
     command
-        .arg("--json-events")
-        .arg("-c")
-        .arg(&config_path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1689,7 +1876,7 @@ fn spawn_profile_process(
         remove_runtime_process_record(&app, &runtime_record);
         #[cfg(windows)]
         let _ = fs::remove_file(&config_path);
-        format!("无法启动 {}：{error}", engine.display())
+        format!("无法启动 {}：{error}", bundled_engine.display())
     })?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -1700,7 +1887,8 @@ fn spawn_profile_process(
         runtime_record.pid = pid;
         runtime_record.process_group_id = pid;
         if let Err(message) = persist_runtime_process_record(&app, &runtime_record) {
-            let stopped = terminate_unregistered_process_group(pid, profile.use_sudo, &engine);
+            let stopped =
+                terminate_unregistered_process_group(pid, profile.use_sudo, &process_engine);
             if stopped {
                 remove_runtime_process_record(&app, &runtime_record);
             } else if let Ok(mut store) = app.state::<AppState>().store.lock() {
@@ -1818,12 +2006,10 @@ fn start_profile_impl(
             .any(|record| record.profile_id.is_empty() || record.profile_id == profile_id)
         {
             return Err(
-                "检测到上次异常退出遗留的 VPN 进程，请先解锁管理员权限完成清理".to_string(),
+                "检测到上次异常退出遗留的 VPN 进程，请先安装系统 helper 完成清理".to_string(),
             );
         }
-        if store.starting_profiles.contains(&profile_id)
-            || profile_has_running_instance(&store, &profile_id)
-        {
+        if profile_connection_in_progress(&store, &profile_id) {
             return Err("该配置已有连接，请先断开后再连接".to_string());
         }
         let profile = store
@@ -1876,18 +2062,22 @@ fn stop_instance(
     profile_id: Option<String>,
 ) -> Result<(), String> {
     let instance_id = {
-        let store = lock_store(&state)?;
+        let mut store = lock_store(&state)?;
         if store.instances.contains_key(&instance_id) {
             instance_id
         } else if let Some(profile_id) = profile_id {
-            let Some(instance) = store
+            if let Some(instance) = store
                 .instances
                 .values()
                 .find(|instance| instance.view.profile_id == profile_id)
-            else {
+            {
+                instance.view.id.clone()
+            } else if store.starting_profiles.contains(&profile_id) {
+                bump_reconnect_generation(&mut store, &profile_id);
                 return Ok(());
-            };
-            instance.view.id.clone()
+            } else {
+                return Ok(());
+            }
         } else {
             return Err("找不到指定连接实例".to_string());
         }
@@ -1935,7 +2125,7 @@ fn stop_instance(
     #[cfg(unix)]
     if use_sudo && !sudo_engine_ready(&app) {
         set_privilege_ready(&app, false, true);
-        return Err("管理员权限已失效，请重新解锁后再断开连接".to_string());
+        return Err("系统 helper 不可用，请重新安装后再断开连接".to_string());
     }
 
     let view = {
@@ -1969,13 +2159,15 @@ fn stop_instance(
 
     #[cfg(unix)]
     {
-        let process_group = format!("-{pid}");
         let result = if use_sudo {
-            Command::new("sudo")
-                .args(["-n", "kill", "-TERM", "--"])
-                .arg(&process_group)
+            Command::new(SUDO_EXECUTABLE)
+                .arg("-n")
+                .arg(installed_helper_path())
+                .arg("stop")
+                .arg(pid.to_string())
                 .status()
         } else {
+            let process_group = format!("-{pid}");
             Command::new("kill")
                 .args(["-TERM", "--"])
                 .arg(&process_group)
@@ -2008,7 +2200,11 @@ fn stop_instance(
             ));
         }
         if signal_sent {
-            let engine = resolve_engine(&app);
+            let engine = if use_sudo {
+                installed_engine_path()
+            } else {
+                resolve_engine(&app)
+            };
             let deadline = Instant::now() + Duration::from_secs(15);
             while Instant::now() < deadline && process_group_contains_engine(pid, &engine) {
                 thread::sleep(Duration::from_millis(100));
@@ -2094,9 +2290,8 @@ fn profile_has_active_instance(app: &AppHandle, profile_id: &str) -> bool {
         .store
         .lock()
         .map(|store| {
-            store.starting_profiles.contains(profile_id)
-                || store.mutating_profiles.contains(profile_id)
-                || profile_has_running_instance(&store, profile_id)
+            store.mutating_profiles.contains(profile_id)
+                || profile_connection_in_progress(&store, profile_id)
         })
         .unwrap_or(false)
 }
@@ -2267,7 +2462,7 @@ fn shutdown_connections(app: &AppHandle) -> Result<(), String> {
     }
     if !stop_errors.is_empty() {
         return Err(format!(
-            "无法安全停止所有 VPN 连接：{}。应用保持运行，请重新解锁管理员权限后再次退出。",
+            "无法安全停止所有 VPN 连接：{}。应用保持运行，请重新安装系统 helper 后再次退出。",
             stop_errors.join("；")
         ));
     }
@@ -2418,6 +2613,28 @@ mod tests {
             auto_connect: false,
             auto_reconnect: true,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn privileged_operations_use_the_fixed_system_sudo_binary() {
+        assert_eq!(SUDO_EXECUTABLE, "/usr/bin/sudo");
+        assert!(std::path::Path::new(SUDO_EXECUTABLE).is_absolute());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn component_hash_detects_payload_changes() {
+        let directory = env::temp_dir().join(format!("openfortivpn-hash-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let first = directory.join("first");
+        let second = directory.join("second");
+        fs::write(&first, b"trusted payload").unwrap();
+        fs::write(&second, b"trusted payload").unwrap();
+        assert_eq!(file_sha256(&first).unwrap(), file_sha256(&second).unwrap());
+        fs::write(&second, b"changed payload").unwrap();
+        assert_ne!(file_sha256(&first).unwrap(), file_sha256(&second).unwrap());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -2715,6 +2932,28 @@ mod tests {
         assert_eq!(auto_reconnect_delay_seconds(3), 12);
         assert_eq!(auto_reconnect_delay_seconds(5), 30);
         assert_eq!(auto_reconnect_delay_seconds(u32::MAX), 30);
+    }
+
+    #[test]
+    fn different_profiles_can_reserve_connections_concurrently() {
+        let mut store = RuntimeStore::default();
+        store.starting_profiles.insert("profile-a".to_string());
+
+        assert!(profile_connection_in_progress(&store, "profile-a"));
+        assert!(!profile_connection_in_progress(&store, "profile-b"));
+
+        store.starting_profiles.insert("profile-b".to_string());
+        assert!(profile_connection_in_progress(&store, "profile-a"));
+        assert!(profile_connection_in_progress(&store, "profile-b"));
+        assert_eq!(store.starting_profiles.len(), 2);
+    }
+
+    #[test]
+    fn automatic_retry_excludes_manual_and_fatal_disconnects() {
+        assert!(automatic_retry_allowed(false, false, true));
+        assert!(!automatic_retry_allowed(true, false, true));
+        assert!(!automatic_retry_allowed(false, true, true));
+        assert!(!automatic_retry_allowed(false, false, false));
     }
 
     #[test]

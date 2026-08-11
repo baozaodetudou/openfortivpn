@@ -28,6 +28,26 @@ expose administrator-password or first-use certificate approval remotely. See
 Build, install, signing, release, upgrade and rollback procedures are documented
 in [`docs/release.md`](docs/release.md).
 
+Linux headless manager
+----------------------
+
+The [`headless`](headless/) directory contains a WebKit-free Linux CLI and
+systemd service for servers without a desktop. Its automatic installer deploys
+the manager and matching engine once; the root service then provides multiple
+profile instances, automatic reconnect and an HTTPS Web console where an
+operator enters the generated access token. The secure default binds only to
+`127.0.0.1:18443`; bind to an explicit private interface and add firewall rules
+before remote use.
+
+```shell
+./headless/scripts/install.sh
+sudo openfortivpn-manager-headless token
+```
+
+Release CI publishes both a Debian package and a self-contained Linux x86-64
+tar archive with `install.sh`. Full commands and API examples are in
+[`headless/README.md`](headless/README.md).
+
 ```shell
 cd app
 pnpm install
@@ -48,28 +68,26 @@ only.
 The manager can start when the user logs in on Linux, macOS and Windows. Each
 profile can also be marked to connect automatically after the application
 starts, provided that its password is available from the system credential
-store. On Linux and macOS, the manager can ask once for the computer
-administrator password when it starts and submit it to `sudo -S -v` to create a
-sudo credential cache for the current application process session. The password
-is cleared immediately after submission: it is not written to disk, placed in
-the system credential store or retained for later use. While the application is
-running, it periodically renews the cache with `sudo -n -v`, and subsequent
-profiles that use sudo start through `sudo -n` without prompting again. Renewal
-stops when the application exits, and the system's sudo timeout policy still
-applies. Automatic profiles wait for this privilege unlock before connecting.
+store. On Linux and macOS, the manager asks once for the computer administrator
+password to install a root-owned, narrowly scoped system helper and matching VPN
+engine. The password is cleared immediately after submission and is not written
+to disk or a credential store. The helper accepts only validated manager VPN
+fields and fixed start/stop operations, while the generated sudoers rule grants
+no shell, arbitrary command, engine or unrestricted `kill` access. After that
+one-time installation, cold starts, connect, disconnect, auto-connect and
+automatic reconnect no longer prompt. Updating or removing the helper still
+requires administrator authorization.
 
 Unexpected disconnects can be retried per profile with bounded backoff. A
 manual disconnect never enters that retry path, and active profiles cannot be
 edited or deleted until their connection has stopped.
 
 The computer administrator password is separate from each profile's VPN
-password. VPN passwords continue to be stored per profile in the system
-credential store or held only for the current application session. Sites that
-do not want the application to handle an administrator password should use a
-purpose-built native privileged helper when one is available. An engine-only
-`NOPASSWD` rule is not enough to safely manage the complete process lifecycle;
-do not compensate with unrestricted `kill`, arbitrary commands, shells or
-writable wrapper scripts. On Windows, the
+password and is used only for the helper installation. VPN passwords continue
+to be stored per profile in the system credential store or held only for the
+current application session. An engine-only `NOPASSWD` rule is not enough to
+safely manage the complete process lifecycle; do not compensate with
+unrestricted `kill`, arbitrary commands, shells or writable wrapper scripts. On Windows, the
 application instead requests UAC elevation once at startup and its child
 processes inherit that access, so this administrator-password dialog is not
 shown. See [`app/README.md`](app/README.md) for details.

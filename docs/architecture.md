@@ -13,7 +13,9 @@ OpenFortiVPN Manager has three layers:
 
 A profile may own at most one running tunnel. Different profiles may run at the
 same time. This invariant is enforced in the Rust control plane, not only by UI
-button state.
+button state. Concurrent profiles are intended for non-overlapping split routes;
+multiple default-route or global-DNS owners require network-wide arbitration and
+are outside the current safe support boundary.
 
 ## Connection lifecycle
 
@@ -24,11 +26,12 @@ events, stale command responses and old automatic-reconnect timers from
 reviving a stopped connection.
 
 On Unix, every tunnel has a dedicated process group and a mode-`0600` runtime
-record. Disconnect and application exit signal the complete group and wait for
-the bundled engine to restore routes and DNS. A preventable exit is blocked if
-authorization has expired, while the native event-loop exit path performs one
-final synchronous cleanup before process termination. If that last-chance
-cleanup cannot be authorized, the recovery record is deliberately retained.
+record. Disconnect and application exit ask the installed restricted helper to
+signal the complete group and wait for the bundled engine to restore routes and
+DNS. A preventable exit is blocked if the helper is missing or unhealthy, while
+the native event-loop exit path performs one final synchronous cleanup before
+process termination. If that last-chance cleanup cannot run, the recovery record
+is deliberately retained.
 After an abnormal app termination, the next launch validates recorded command
 lines before offering to clean the stale group, so an unrelated process whose
 PID was reused is never signalled. The desktop application is single-instance
@@ -69,11 +72,13 @@ VPN passwords are either session-only or stored in macOS Keychain, Windows
 Credential Manager or Linux Secret Service. They are never written to the
 profile JSON or returned by the remote API.
 
-The current Unix implementation uses a short-lived sudo credential cache. A
-native, narrowly scoped privileged helper is the production target for managed
-Linux/macOS fleets. It must validate a structured request and may only start or
-stop the bundled engine and apply the routes/DNS associated with an approved
-profile; it must never expose a general command runner.
+Unix installs a narrow helper and matching engine into fixed, root-owned paths.
+Its sudoers rule permits only that helper. The helper validates an allowlist of
+manager-generated fields, creates a root-only runtime configuration, rejects
+engine extension directives, and only stops process groups containing the fixed
+engine. It never exposes an engine path, shell, arbitrary command or unrestricted
+PID signal operation. The administrator password authorizes installation only
+and is not retained. Helper upgrades and removal require authorization again.
 
 ## Release gates
 

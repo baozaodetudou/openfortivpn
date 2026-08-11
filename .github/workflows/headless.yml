@@ -1,0 +1,203 @@
+name: Headless CI
+
+on:
+  push:
+    paths:
+      - 'headless/**'
+      - 'app/src-tauri/src/remote.html'
+      - '.github/workflows/headless.yml'
+  pull_request:
+    paths:
+      - 'headless/**'
+      - 'app/src-tauri/src/remote.html'
+      - '.github/workflows/headless.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: headless-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Rust quality checks
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: headless -> target
+
+      - name: Format, lint and test
+        run: |
+          cargo fmt --manifest-path headless/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path headless/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path headless/Cargo.toml --all-targets
+
+  package:
+    name: Build and inspect Linux packages
+    needs: test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install build and package inspection dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake dpkg-dev libssl-dev pkg-config shellcheck
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: headless -> target
+
+      - name: Read package version
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(awk -F'"' '/^version = "/ { print $2; exit }' headless/Cargo.toml)
+          if [[ -z "$version" ]]; then
+            echo "Unable to read the package version from headless/Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check installer and maintainer scripts
+        run: |
+          sh -n headless/scripts/install.sh
+          sh -n headless/scripts/install-bundle.sh
+          sh -n headless/packaging/debian/postinst
+          sh -n headless/packaging/debian/prerm
+          shellcheck \
+            headless/scripts/install.sh \
+            headless/scripts/install-bundle.sh \
+            headless/packaging/debian/postinst \
+            headless/packaging/debian/prerm
+
+      - name: Build headless manager and VPN engine
+        run: |
+          cargo build --locked --release --manifest-path headless/Cargo.toml
+          cmake -S . -B build/headless-ci \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENSSL_USE_STATIC_LIBS=TRUE \
+            -DBUILD_TESTING=OFF
+          cmake --build build/headless-ci --parallel
+          headless/target/release/openfortivpn-manager-headless --help
+          build/headless-ci/openfortivpn --version
+
+      - name: Create tar and Debian packages
+        env:
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          artifact_dir="$GITHUB_WORKSPACE/headless-dist"
+          archive_root="$artifact_dir/openfortivpn-manager-headless-linux-x86_64"
+          deb_root="$RUNNER_TEMP/openfortivpn-manager-headless_${PACKAGE_VERSION}_amd64"
+
+          mkdir -p "$archive_root/bin" "$archive_root/libexec" "$archive_root/examples"
+          install -m 0755 headless/target/release/openfortivpn-manager-headless \
+            "$archive_root/bin/openfortivpn-manager-headless"
+          install -m 0755 build/headless-ci/openfortivpn \
+            "$archive_root/libexec/openfortivpn"
+          install -m 0755 headless/scripts/install-bundle.sh "$archive_root/install.sh"
+          install -m 0644 headless/README.md "$archive_root/README.md"
+          cp -a headless/examples/. "$archive_root/examples/"
+          tar -C "$artifact_dir" -czf \
+            "$artifact_dir/openfortivpn-manager-headless_${PACKAGE_VERSION}_linux_x86_64.tar.gz" \
+            "$(basename "$archive_root")"
+
+          mkdir -p "$deb_root/DEBIAN" \
+            "$deb_root/usr/local/sbin" \
+            "$deb_root/usr/local/libexec/openfortivpn-manager-headless" \
+            "$deb_root/usr/share/doc/openfortivpn-manager-headless/examples"
+          sed "s/^Version:.*/Version: $PACKAGE_VERSION/" headless/packaging/debian/control \
+            > "$deb_root/DEBIAN/control"
+          install -m 0755 headless/packaging/debian/postinst "$deb_root/DEBIAN/postinst"
+          install -m 0755 headless/packaging/debian/prerm "$deb_root/DEBIAN/prerm"
+          install -m 0755 headless/target/release/openfortivpn-manager-headless \
+            "$deb_root/usr/local/sbin/openfortivpn-manager-headless"
+          install -m 0755 build/headless-ci/openfortivpn \
+            "$deb_root/usr/local/libexec/openfortivpn-manager-headless/openfortivpn"
+          install -m 0644 headless/README.md \
+            "$deb_root/usr/share/doc/openfortivpn-manager-headless/README.md"
+          cp -a headless/examples/. \
+            "$deb_root/usr/share/doc/openfortivpn-manager-headless/examples/"
+          dpkg-deb --build --root-owner-group "$deb_root" \
+            "$artifact_dir/openfortivpn-manager-headless_${PACKAGE_VERSION}_amd64.deb"
+
+      - name: Inspect tar package without installing it
+        env:
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          archive="headless-dist/openfortivpn-manager-headless_${PACKAGE_VERSION}_linux_x86_64.tar.gz"
+          extract_dir="$RUNNER_TEMP/headless-tar"
+          tar -tzf "$archive"
+          mkdir -p "$extract_dir"
+          tar -xzf "$archive" -C "$extract_dir"
+          root="$extract_dir/openfortivpn-manager-headless-linux-x86_64"
+          test -x "$root/bin/openfortivpn-manager-headless"
+          test -x "$root/libexec/openfortivpn"
+          test -x "$root/install.sh"
+          test -f "$root/README.md"
+          test -f "$root/examples/server.json"
+          test -f "$root/examples/profile.json"
+          sh -n "$root/install.sh"
+          "$root/bin/openfortivpn-manager-headless" --help
+          "$root/libexec/openfortivpn" --version
+
+      - name: Inspect Debian package without installing it
+        env:
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          deb="headless-dist/openfortivpn-manager-headless_${PACKAGE_VERSION}_amd64.deb"
+          extract_dir="$RUNNER_TEMP/headless-deb"
+          control_dir="$RUNNER_TEMP/headless-deb-control"
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb"
+          test "$(dpkg-deb --field "$deb" Package)" = "openfortivpn-manager-headless"
+          test "$(dpkg-deb --field "$deb" Version)" = "$PACKAGE_VERSION"
+          test "$(dpkg-deb --field "$deb" Architecture)" = "amd64"
+          dpkg-deb --extract "$deb" "$extract_dir"
+          dpkg-deb --control "$deb" "$control_dir"
+          test -x "$extract_dir/usr/local/sbin/openfortivpn-manager-headless"
+          test -x "$extract_dir/usr/local/libexec/openfortivpn-manager-headless/openfortivpn"
+          test -f "$extract_dir/usr/share/doc/openfortivpn-manager-headless/README.md"
+          test -f "$extract_dir/usr/share/doc/openfortivpn-manager-headless/examples/server.json"
+          test -x "$control_dir/postinst"
+          test -x "$control_dir/prerm"
+          sh -n "$control_dir/postinst"
+          sh -n "$control_dir/prerm"
+
+      - name: Upload inspected packages
+        uses: actions/upload-artifact@v6
+        with:
+          name: openfortivpn-manager-Linux-headless-x86_64-${{ steps.package.outputs.version }}
+          path: |
+            headless-dist/*.deb
+            headless-dist/*.tar.gz
+          if-no-files-found: error

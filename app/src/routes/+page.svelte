@@ -700,17 +700,17 @@
       privilegeStatus = status;
       privilegeInitialized = true;
       if (status.required && !status.ready) {
-        throw new Error("系统未确认管理员权限，请检查密码后重试");
+        throw new Error("系统未确认 helper 安装状态，请检查密码后重试");
       }
       privilegeModalOpen = false;
       pendingPrivilegeProfileId = "";
-      showSuccess("管理员权限已解锁，本次 App 会话内后续连接无需再次输入");
+      showSuccess("系统 VPN helper 已安装，今后连接不再要求管理员密码");
       const pendingProfile = profiles.find(
         (entry) => entry.profile.id === pendingProfileId,
       );
       if (pendingProfile) await startProfile(pendingProfile);
     } catch (error) {
-      privilegeError = `解锁失败：${errorText(error)}`;
+      privilegeError = `安装失败：${errorText(error)}`;
     } finally {
       administratorPassword = "";
       privilegeBusy = false;
@@ -837,7 +837,7 @@
         <p class="settings-error" role="alert">{autostartError}</p>
       {/if}
       <p class="settings-note">
-        macOS/Linux 无人值守自动连接需要受限 sudoers，或确保连接过程不依赖交互式 sudo。
+        macOS/Linux 首次安装系统 VPN helper 后，自动连接和日常操作不再要求管理员密码。
       </p>
       <button class="remote-settings-button" onclick={openRemoteSettings}>
         <span class:online={remoteAccess?.running} class="remote-dot"></span>
@@ -1086,12 +1086,12 @@
       <form onsubmit={unlockPrivileges}>
         <div class="privilege-icon" aria-hidden="true">◆</div>
         <div class="privilege-heading">
-          <small>本次 APP 会话</small>
-          <h2 id="privilege-title">解锁管理员权限</h2>
+          <small>仅首次安装</small>
+          <h2 id="privilege-title">安装系统 VPN Helper</h2>
         </div>
 
         <p id="privilege-description" class="privilege-description">
-          OpenFortiVPN 需要管理员权限来创建网络接口、路由和 DNS 设置。请输入你的<b>电脑管理员密码</b>，这不是 VPN 账号的密码。
+          OpenFortiVPN 需要管理员权限来创建网络接口、路由和 DNS 设置。首次安装受限系统 helper 需要输入一次<b>电脑管理员密码</b>，这不是 VPN 账号的密码。
         </p>
 
         <label class="privilege-password">
@@ -1108,7 +1108,7 @@
         </label>
 
         <div id="privilege-storage-note" class="privilege-note">
-          密码只用于解锁当前 App 会话，提交后会立即从界面内存中清空，不会保存到配置、系统凭据库或 localStorage。
+          密码只用于本次 helper 安装，提交后会立即从界面内存中清空。helper 只能启动固定 VPN 引擎和停止已验证的 VPN 进程，不能执行 shell 或任意命令；以后启动 App 和连接 VPN 都无需再次输入管理员密码。
         </div>
         {#if privilegeError}
           <div class="privilege-error" role="alert">{privilegeError}</div>
@@ -1125,7 +1125,7 @@
             type="submit"
             class="primary-button"
             disabled={privilegeBusy || !administratorPassword}
-          >{privilegeBusy ? "正在解锁…" : "解锁本次会话"}</button>
+          >{privilegeBusy ? "正在安装…" : "安装并继续"}</button>
         </div>
       </form>
     </div>
@@ -1205,7 +1205,7 @@
           <label class="toggle"><input type="checkbox" bind:checked={draft.setDns} /><span></span><b>设置 DNS</b></label>
           <label class="toggle"><input type="checkbox" bind:checked={draft.pppdUsePeerdns} /><span></span><b>使用 Peer DNS</b></label>
           <label class="toggle"><input type="checkbox" bind:checked={draft.halfInternetRoutes} /><span></span><b>半默认路由</b></label>
-          <label class="toggle"><input type="checkbox" bind:checked={draft.useSudo} /><span></span><b>使用 sudo -n</b></label>
+          <label class="toggle"><input type="checkbox" bind:checked={draft.useSudo} /><span></span><b>使用系统 Helper</b></label>
           <label class="toggle"><input type="checkbox" bind:checked={rememberPassword} /><span></span><b>保存密码到系统凭据库</b></label>
           <label class="toggle"><input type="checkbox" bind:checked={draft.autoConnect} /><span></span><b>应用启动后自动连接</b></label>
           <label class="toggle"><input type="checkbox" bind:checked={draft.autoReconnect} /><span></span><b>意外断线自动重连</b></label>
@@ -1213,7 +1213,7 @@
       </fieldset>
 
       <div class="modal-note">
-        “应用启动后自动连接”会在打开 App 后发起连接，要求密码已保存到系统凭据库；“意外断线自动重连”只处理非主动断开的连接。Windows 会继承应用管理员权限；macOS/Linux 无人值守连接需要受限 sudoers，或确保连接不依赖交互式 sudo。
+        “应用启动后自动连接”要求 VPN 密码已保存；“意外断线自动重连”只处理非主动断开的连接。macOS/Linux 首次安装受限系统 Helper 后可无人值守连接。不同配置可同时连接，但多个默认路由或全局 DNS 配置可能互相冲突，建议并发 VPN 使用不重叠的分流路由。
       </div>
       <div class="modal-actions">
         <button type="button" class="secondary-button" disabled={busy} onclick={() => (editing = false)}>取消</button>

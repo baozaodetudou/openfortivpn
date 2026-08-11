@@ -6,7 +6,9 @@ connection processes on Linux, macOS and Windows.
 Each profile owns at most one connection at a time. Different profiles can be
 connected concurrently. The UI exposes connect, disconnect and reconnect as
 state-aware actions; editing and deletion are blocked while that profile is
-active.
+active. Concurrent profiles should use non-overlapping split routes. Two VPNs
+that both replace the default route or global DNS may conflict at the operating
+system level and are not advertised as a safe configuration.
 
 ## Development
 
@@ -46,9 +48,9 @@ Automatic connection requires that profile's password to be saved in the system
 credential store so that it is available after an application restart. A
 profile without a securely stored password remains disconnected until the user
 provides one. On Linux and macOS, profiles that use sudo wait until the startup
-privilege unlock described below succeeds or the user chooses an alternative
-privilege setup; they do not race ahead while the administrator-password dialog
-is pending.
+system-helper installation described below succeeds; after its one-time
+installation they can connect after a cold application start without another
+administrator-password prompt.
 
 The separate **Reconnect automatically after an unexpected disconnect** option
 uses the password already available in the current app session and retries with
@@ -60,47 +62,49 @@ failures also stop the retry loop so they can be corrected explicitly.
 
 ### Linux and macOS
 
-When the manager starts, it can display a one-time privilege-unlock dialog for
-the computer administrator password. The manager passes that password directly
-to `sudo -S -v`, creating a sudo credential cache for the current application
-process session. The password is never written to a file, never saved in the
-operating system credential store and never retained for future launches. Its
-in-memory value is cleared immediately after it has been submitted to sudo.
+The first connection displays an installation dialog for the computer
+administrator password. That password authorizes one installation of a narrow,
+root-owned helper and the matching root-owned engine. The password is never
+written to a file or credential store and its in-memory value is cleared
+immediately. A generated `/etc/sudoers.d/openfortivpn-manager-<uid>` rule permits
+only the fixed helper; it does not permit the engine, `kill`, a shell, a writable
+wrapper or arbitrary commands.
 
-While the application remains open, it periodically runs `sudo -n -v` to renew
-the credential cache without displaying another prompt. Connections whose
-profiles enable **Use sudo** then launch the bundled engine with `sudo -n`, so
-normal connect, disconnect and reconnect operations do not ask for the computer
-administrator password again. The renewal task stops when the application
-exits. Sudo remains authoritative: its configured timestamp timeout, cache
-scope, revocation and other system policy continue to apply.
+After installation, application restarts, connect, disconnect, explicit
+reconnect, automatic reconnect and auto-connect do not request the administrator
+password again. Updating or removing the system helper is a privileged install
+operation and deliberately requires administrator authorization again.
+
+The helper validates a strict allowlist of manager-generated VPN fields, copies
+the validated data into a root-only temporary configuration, and launches only
+the fixed root-owned engine. It rejects extension directives such as
+`pppd-plugin` and `pppd-call`. Stop requests are accepted only for a process
+group containing that fixed engine.
 
 Each Unix VPN process is placed in its own process group. Disconnect and
-application shutdown signal the complete group, wait for the engine to restore
-routes and DNS, and only then allow the manager to exit. Preventable exits are
-blocked when sudo authorization has expired. The native event-loop exit path
-also performs a synchronous last-chance cleanup; if authorization is unavailable
-there, the private recovery record remains so the next launch can identify and
-clean the exact process group after local privilege unlock.
+application shutdown ask the helper to signal the complete group, wait for the
+engine to restore routes and DNS, and only then allow the manager to exit. The
+native event-loop exit path also performs a synchronous last-chance cleanup; if
+the installed helper is missing or unhealthy, the private recovery record remains
+so the next launch can identify and clean the exact process group after helper
+recovery.
 
 This administrator password is not the VPN password. The VPN password belongs
 to an individual profile and continues to be saved in macOS Keychain or Linux
 Secret Service when **Save password in system credential store** is enabled, or
 held in memory for only the current application session when it is disabled.
-The administrator password is used solely to unlock the sudo session described
-above.
+The administrator password is used solely for the one-time helper installation.
 
 Stored VPN passwords are loaded on a background worker after the application
 window is created. The UI therefore remains responsive when macOS Keychain or
 Linux Secret Service requires a local user approval, and profile credential
 status is refreshed as soon as loading completes.
 
-If policy does not allow the manager to receive an administrator password, a
-purpose-built native privileged helper is the preferred deployment model once
-one is available. An engine-only `NOPASSWD` rule is not sufficient to safely
-manage the complete process lifecycle. Do not work around that limitation by
-granting passwordless access to unrestricted `kill`, arbitrary commands,
-shells, directories or writable wrapper scripts.
+If policy does not allow the manager to receive an administrator password, an
+administrator can deploy the packaged helper through the organization's normal
+device-management process. Never replace it with an engine-only `NOPASSWD` rule
+or passwordless access to unrestricted `kill`, arbitrary commands, shells,
+directories or writable wrapper scripts.
 
 ### Windows
 

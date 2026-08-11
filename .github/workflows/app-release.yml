@@ -76,6 +76,9 @@ jobs:
           cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
           cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
           cargo test --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features
+          cargo fmt --manifest-path src-tauri/helper/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path src-tauri/helper/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path src-tauri/helper/Cargo.toml --all-targets
 
       - name: Build and test VPN engine
         working-directory: ${{ github.workspace }}
@@ -83,6 +86,13 @@ jobs:
           cmake -S . -B build/release-quality -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
           cmake --build build/release-quality --parallel
           ctest --test-dir build/release-quality --output-on-failure
+
+      - name: Check Linux headless manager
+        working-directory: ${{ github.workspace }}
+        run: |
+          cargo fmt --manifest-path headless/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path headless/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path headless/Cargo.toml --all-targets
 
   bundle-unix:
     name: Bundle ${{ matrix.name }}
@@ -96,9 +106,26 @@ jobs:
           - name: Linux-x64
             os: ubuntu-22.04
             bundles: deb
+            bundle_root: src-tauri/target/release/bundle
+            artifact_root: app/src-tauri/target/release/bundle
           - name: macOS-arm64
             os: macos-14
             bundles: app,dmg
+            rust_target: aarch64-apple-darwin
+            cmake_arch: arm64
+            runner_arch: arm64
+            openssl_prefix: /opt/homebrew/opt/openssl@3
+            bundle_root: src-tauri/target/aarch64-apple-darwin/release/bundle
+            artifact_root: app/src-tauri/target/aarch64-apple-darwin/release/bundle
+          - name: macOS-x86_64
+            os: macos-15-intel
+            bundles: app,dmg
+            rust_target: x86_64-apple-darwin
+            cmake_arch: x86_64
+            runner_arch: x86_64
+            openssl_prefix: /usr/local/opt/openssl@3
+            bundle_root: src-tauri/target/x86_64-apple-darwin/release/bundle
+            artifact_root: app/src-tauri/target/x86_64-apple-darwin/release/bundle
 
     defaults:
       run:
@@ -148,6 +175,10 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Add macOS Rust target
+        if: runner.os == 'macOS'
+        run: rustup target add "${{ matrix.rust_target }}"
+
       - name: Configure macOS signing identity
         if: runner.os == 'macOS'
         env:
@@ -193,18 +224,48 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build architecture-matched macOS VPN engine
+        if: runner.os == 'macOS'
+        run: |
+          test "$(uname -m)" = "${{ matrix.runner_arch }}"
+          engine_build="$GITHUB_WORKSPACE/build/app-engine-${{ matrix.cmake_arch }}"
+          cmake -S "$GITHUB_WORKSPACE" -B "$engine_build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="${{ matrix.cmake_arch }}" \
+            -DCMAKE_PREFIX_PATH="${{ matrix.openssl_prefix }}" \
+            -DOPENSSL_ROOT_DIR="${{ matrix.openssl_prefix }}" \
+            -DOPENSSL_USE_STATIC_LIBS=TRUE \
+            -DBUILD_TESTING=OFF
+          cmake --build "$engine_build" --config Release --parallel
+          mkdir -p src-tauri/resources/bin
+          cp "$engine_build/openfortivpn" src-tauri/resources/bin/openfortivpn
+          engine_archs=$(lipo -archs src-tauri/resources/bin/openfortivpn)
+          test "$engine_archs" = "${{ matrix.cmake_arch }}"
+
       - name: Build platform bundles
         env:
-          CMAKE_PREFIX_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/openssl@3' || '' }}
-          OPENSSL_ROOT_DIR: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/openssl@3' || '' }}
-          PKG_CONFIG_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/openssl@3/lib/pkgconfig' || '' }}
-        run: pnpm tauri build --bundles ${{ matrix.bundles }}
+          CMAKE_PREFIX_PATH: ${{ matrix.openssl_prefix }}
+          OPENSSL_ROOT_DIR: ${{ matrix.openssl_prefix }}
+          PKG_CONFIG_PATH: ${{ matrix.openssl_prefix && format('{0}/lib/pkgconfig', matrix.openssl_prefix) || '' }}
+          OPENFORTIVPN_SKIP_ENGINE_BUILD: ${{ runner.os == 'macOS' && '1' || '0' }}
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            pnpm tauri build --bundles "${{ matrix.bundles }}" --target "${{ matrix.rust_target }}"
+          else
+            pnpm tauri build --bundles "${{ matrix.bundles }}"
+          fi
 
       - name: Verify platform bundle
         run: |
           if [[ "$RUNNER_OS" == "macOS" ]]; then
-            app_path="src-tauri/target/release/bundle/macos/OpenFortiVPN Manager.app"
+            app_path="${{ matrix.bundle_root }}/macos/OpenFortiVPN Manager.app"
             codesign --verify --deep --strict "$app_path"
+            manager_archs=$(lipo -archs "$app_path/Contents/MacOS/openfortivpn-manager")
+            engine_archs=$(lipo -archs "$app_path/Contents/Resources/bin/openfortivpn")
+            helper_archs=$(lipo -archs "$app_path/Contents/Resources/bin/openfortivpn-manager-helper")
+            test "$manager_archs" = "${{ matrix.cmake_arch }}"
+            test "$engine_archs" = "${{ matrix.cmake_arch }}"
+            test "$helper_archs" = "${{ matrix.cmake_arch }}"
             if [[ "$GITHUB_REF" == refs/tags/* ]]; then
               xcrun stapler validate "$app_path"
               spctl --assess --type execute --verbose "$app_path"
@@ -227,8 +288,10 @@ jobs:
             package_name=$(dpkg-deb -f "$deb" Package)
             sudo apt-get install -y "$PWD/$deb"
             engine=$(dpkg -L "$package_name" | grep '/bin/openfortivpn$' | head -1)
+            helper=$(dpkg -L "$package_name" | grep '/bin/openfortivpn-manager-helper$' | head -1)
             app_binary=$(command -v openfortivpn-manager)
             test -x "$engine"
+            test -x "$helper"
             test -x "$app_binary"
             "$engine" --version
             set +e
@@ -245,8 +308,8 @@ jobs:
 
       - name: Generate SHA-256 checksums
         run: |
-          checksum_file="src-tauri/target/release/bundle/SHA256SUMS-${{ matrix.name }}.txt"
-          find src-tauri/target/release/bundle -type f \
+          checksum_file="${{ matrix.bundle_root }}/SHA256SUMS-${{ matrix.name }}.txt"
+          find "${{ matrix.bundle_root }}" -type f \
             \( -name '*.deb' -o -name '*.dmg' \) -print0 |
             while IFS= read -r -d '' file; do
               hash=$(shasum -a 256 "$file" | awk '{print $1}')
@@ -259,10 +322,10 @@ jobs:
         with:
           name: openfortivpn-manager-${{ matrix.name }}
           path: |
-            app/src-tauri/target/release/bundle/**/*.deb
-            app/src-tauri/target/release/bundle/**/*.dmg
-            app/src-tauri/target/release/bundle/macos/*.app/**
-            app/src-tauri/target/release/bundle/SHA256SUMS-*.txt
+            ${{ matrix.artifact_root }}/**/*.deb
+            ${{ matrix.artifact_root }}/**/*.dmg
+            ${{ matrix.artifact_root }}/macos/*.app/**
+            ${{ matrix.artifact_root }}/SHA256SUMS-*.txt
           if-no-files-found: error
 
   bundle-windows:
@@ -441,10 +504,124 @@ jobs:
             app/src-tauri/target/release/bundle/SHA256SUMS-Windows-x64.txt
           if-no-files-found: error
 
+  bundle-headless-linux:
+    name: Bundle Linux headless CLI
+    needs: quality
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install build and runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake curl libssl-dev pkg-config ppp
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: headless -> target
+
+      - name: Build headless manager and VPN engine
+        run: |
+          cargo build --locked --release --manifest-path headless/Cargo.toml
+          cmake -S . -B build/headless-release \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPENSSL_USE_STATIC_LIBS=TRUE \
+            -DBUILD_TESTING=OFF
+          cmake --build build/headless-release --parallel
+          headless/target/release/openfortivpn-manager-headless --help
+          build/headless-release/openfortivpn --version
+
+      - name: Create tar and Debian packages
+        run: |
+          version=$(awk -F'"' '/^version = "/ { print $2; exit }' headless/Cargo.toml)
+          test -n "$version"
+          artifact_dir="$GITHUB_WORKSPACE/headless-dist"
+          archive_root="$artifact_dir/openfortivpn-manager-headless-linux-x86_64"
+          deb_root="$RUNNER_TEMP/openfortivpn-manager-headless_${version}_amd64"
+          mkdir -p "$archive_root/bin" "$archive_root/libexec" "$archive_root/examples"
+          install -m 0755 headless/target/release/openfortivpn-manager-headless \
+            "$archive_root/bin/openfortivpn-manager-headless"
+          install -m 0755 build/headless-release/openfortivpn \
+            "$archive_root/libexec/openfortivpn"
+          install -m 0755 headless/scripts/install-bundle.sh "$archive_root/install.sh"
+          install -m 0644 headless/README.md "$archive_root/README.md"
+          cp -a headless/examples/. "$archive_root/examples/"
+          tar -C "$artifact_dir" -czf \
+            "$artifact_dir/openfortivpn-manager-headless_${version}_linux_x86_64.tar.gz" \
+            "$(basename "$archive_root")"
+
+          mkdir -p "$deb_root/DEBIAN" \
+            "$deb_root/usr/local/sbin" \
+            "$deb_root/usr/local/libexec/openfortivpn-manager-headless" \
+            "$deb_root/usr/share/doc/openfortivpn-manager-headless/examples"
+          sed "s/^Version:.*/Version: $version/" headless/packaging/debian/control \
+            > "$deb_root/DEBIAN/control"
+          install -m 0755 headless/packaging/debian/postinst "$deb_root/DEBIAN/postinst"
+          install -m 0755 headless/packaging/debian/prerm "$deb_root/DEBIAN/prerm"
+          install -m 0755 headless/target/release/openfortivpn-manager-headless \
+            "$deb_root/usr/local/sbin/openfortivpn-manager-headless"
+          install -m 0755 build/headless-release/openfortivpn \
+            "$deb_root/usr/local/libexec/openfortivpn-manager-headless/openfortivpn"
+          install -m 0644 headless/README.md \
+            "$deb_root/usr/share/doc/openfortivpn-manager-headless/README.md"
+          cp -a headless/examples/. \
+            "$deb_root/usr/share/doc/openfortivpn-manager-headless/examples/"
+          dpkg-deb --build --root-owner-group "$deb_root" \
+            "$artifact_dir/openfortivpn-manager-headless_${version}_amd64.deb"
+
+      - name: Install and smoke-test headless Debian package
+        run: |
+          deb=$(find "$GITHUB_WORKSPACE/headless-dist" -maxdepth 1 -name '*.deb' -print -quit)
+          test -n "$deb"
+          sudo apt-get install -y "$deb"
+          sudo systemctl is-active --quiet openfortivpn-manager-headless.service
+          ready=0
+          for attempt in {1..30}; do
+            if curl --fail --silent --insecure https://127.0.0.1:18443/health >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            sudo journalctl -u openfortivpn-manager-headless.service --no-pager -n 100
+            exit 1
+          fi
+          token=$(sudo openfortivpn-manager-headless token)
+          curl --fail --silent --show-error --insecure \
+            -H "Authorization: Bearer $token" \
+            https://127.0.0.1:18443/api/v1/snapshot
+          sudo apt-get remove -y openfortivpn-manager-headless
+
+      - name: Generate SHA-256 checksums
+        run: |
+          cd headless-dist
+          sha256sum *.deb *.tar.gz > SHA256SUMS-Linux-headless-x86_64.txt
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: openfortivpn-manager-Linux-headless-x86_64
+          path: |
+            headless-dist/*.deb
+            headless-dist/*.tar.gz
+            headless-dist/SHA256SUMS-*.txt
+          if-no-files-found: error
+
   publish:
     name: Publish tagged desktop release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [bundle-unix, bundle-windows]
+    needs: [bundle-unix, bundle-windows, bundle-headless-linux]
     runs-on: ubuntu-22.04
     steps:
       - name: Download all verified platform artifacts
@@ -461,5 +638,6 @@ jobs:
             release-assets/**/*.dmg
             release-assets/**/*.exe
             release-assets/**/*.msi
+            release-assets/**/*.tar.gz
             release-assets/**/SHA256SUMS-*.txt
           generate_release_notes: true

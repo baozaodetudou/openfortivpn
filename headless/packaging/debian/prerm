@@ -1,0 +1,6 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ] && [ -x /usr/local/sbin/openfortivpn-manager-headless ]; then
+  /usr/local/sbin/openfortivpn-manager-headless uninstall
+fi

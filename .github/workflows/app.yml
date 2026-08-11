@@ -28,6 +28,7 @@ jobs:
       # The C engine has its own Linux/Windows workflows. This job verifies the
       # Tauri shell without requiring a platform OpenSSL toolchain twice.
       OPENFORTIVPN_SKIP_ENGINE_BUILD: '1'
+      OPENFORTIVPN_ALLOW_MISSING_ENGINE: '1'
 
     strategy:
       fail-fast: false
@@ -105,6 +106,13 @@ jobs:
 
       - name: Run Rust tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features
+
+      - name: Check privileged helper
+        if: runner.os != 'Windows'
+        run: |
+          cargo fmt --manifest-path src-tauri/helper/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path src-tauri/helper/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path src-tauri/helper/Cargo.toml --all-targets
 
       - name: Build Tauri application without bundles
         run: pnpm tauri build --no-bundle

@@ -8,8 +8,10 @@ its platform runtime files.
 
 | Platform | CI runner | Packages | Runtime privilege model |
 | --- | --- | --- | --- |
-| Linux x86-64 | Ubuntu 22.04 | `.deb` | One local sudo unlock per app session |
-| macOS arm64 | macOS 14 | `.app`, `.dmg` | One local sudo unlock per app session |
+| Linux x86-64 | Ubuntu 22.04 | `.deb` | One-time restricted helper installation |
+| Linux headless x86-64 | Ubuntu 22.04 | `.deb`, `.tar.gz` | systemd root service; no desktop dependency |
+| macOS arm64 | macOS 14 | `.app`, `.dmg` | One-time restricted helper installation |
+| macOS x86-64 | macOS Intel | `.app`, `.dmg` | One-time restricted helper installation |
 | Windows x86-64 | Windows Server 2022 | `.msi`, NSIS `.exe` | Application manifest requests UAC elevation |
 
 Windows packages include the Windows engine, Wintun and the required MinGW
@@ -26,6 +28,7 @@ pnpm check
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --all-targets --all-features
+cargo test --manifest-path src-tauri/helper/Cargo.toml --all-targets
 APPLE_SIGNING_IDENTITY=- pnpm tauri build --bundles app,dmg
 ```
 
@@ -39,16 +42,19 @@ an internal ad-hoc build.
 `App CI` runs frontend checks, Rust formatting, Clippy/tests and a Tauri
 no-bundle build on Linux, macOS and Windows for every app change. `Desktop App
 Release` first runs the same application checks plus the C engine test suite,
-then builds the installable packages on all three operating systems for the
+the privileged helper and the headless service tests, then builds the installable
+packages on all three operating systems for the
 release branch, when manually dispatched, or when a `v*` tag is pushed. The
 release workflow installs and starts the Linux DEB and Windows MSI in their
 native runners and starts the bundled macOS app before accepting the artifacts.
 Every build uploads a platform artifact and a `SHA256SUMS-*.txt` file. A tag
-publishes only the DMG, DEB, EXE, MSI and checksum files in one complete GitHub
+publishes the DMG, DEB, headless tarball, EXE, MSI and checksum files in one complete GitHub
 release; the unpacked macOS `.app` remains available as a workflow artifact.
 
-Before tagging, update the version in `app/src-tauri/tauri.conf.json` and
-`app/src-tauri/Cargo.toml`, review release notes and run the local checks. Create
+Before tagging, update the version in `app/src-tauri/tauri.conf.json`,
+`app/src-tauri/Cargo.toml` and `headless/Cargo.toml`; the release workflow derives
+the Debian metadata and artifact names from the headless crate version. Review
+release notes and run the local checks. Create
 an annotated tag only from the reviewed commit:
 
 ```shell
@@ -90,7 +96,8 @@ For every release candidate:
    app while connected and confirm routes, DNS and all VPN child processes are
    removed.
 6. Relaunch after a forced app termination and verify stale-process recovery
-   requests local authorization before cleanup.
+   uses the installed helper without another password prompt. Removing or
+   damaging the helper must block cleanup and request a fresh helper install.
 7. Enable remote access on loopback, verify the certificate fingerprint, test
    rejected and authorized API calls, rotate the token and disable the server.
 8. Reboot once to verify the application auto-start option and per-profile

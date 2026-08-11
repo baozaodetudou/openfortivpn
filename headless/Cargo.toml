@@ -1,0 +1,33 @@
+[package]
+name = "openfortivpn-manager-headless"
+version = "0.1.0"
+edition = "2021"
+description = "Headless HTTPS and CLI manager for openfortivpn"
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "openfortivpn-manager-headless"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8.9"
+axum-server = { version = "0.8.0", features = ["tls-rustls-no-provider"] }
+base64 = "0.22"
+clap = { version = "4.5", features = ["derive"] }
+nix = { version = "0.30", features = ["signal", "process", "user"] }
+rand = "0.9"
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2.6"
+tokio = { version = "1.48", features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
+
+[dev-dependencies]
+http-body-util = "0.1"
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }

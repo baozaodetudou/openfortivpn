@@ -11,3 +11,5 @@ vite.config.ts.timestamp-*
 /src-tauri/resources/bin/openfortivpn
 /src-tauri/resources/bin/openfortivpn.exe
 /src-tauri/resources/bin/wintun.dll
+/src-tauri/resources/bin/openfortivpn-manager-helper
+/src-tauri/helper/target/

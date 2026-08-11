@@ -1,0 +1,20 @@
+{
+  "profile": {
+    "id": "office-vpn",
+    "name": "Office VPN",
+    "host": "vpn.example.com",
+    "port": 443,
+    "username": "alice",
+    "realm": "",
+    "trustedCert": "",
+    "setRoutes": true,
+    "setDns": true,
+    "pppdUsePeerdns": false,
+    "halfInternetRoutes": false,
+    "useSudo": true,
+    "autoConnect": false,
+    "autoReconnect": true
+  },
+  "password": "replace-with-vpn-password",
+  "rememberPassword": true
+}
