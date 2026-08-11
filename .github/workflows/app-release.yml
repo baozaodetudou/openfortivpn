@@ -586,7 +586,7 @@ jobs:
           sudo apt-get install -y "$deb"
           sudo systemctl is-active --quiet openfortivpn-manager-headless.service
           ready=0
-          for attempt in {1..30}; do
+          for _attempt in {1..30}; do
             if curl --fail --silent --insecure https://127.0.0.1:18443/health >/dev/null 2>&1; then
               ready=1
               break
@@ -606,7 +606,7 @@ jobs:
       - name: Generate SHA-256 checksums
         run: |
           cd headless-dist
-          sha256sum *.deb *.tar.gz > SHA256SUMS-Linux-headless-x86_64.txt
+          sha256sum ./*.deb ./*.tar.gz > SHA256SUMS-Linux-headless-x86_64.txt
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v6

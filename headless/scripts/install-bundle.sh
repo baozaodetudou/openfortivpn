@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-BUNDLE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+BUNDLE_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 MANAGER="$BUNDLE_DIR/bin/openfortivpn-manager-headless"
 ENGINE="$BUNDLE_DIR/libexec/openfortivpn"
 
