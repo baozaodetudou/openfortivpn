@@ -129,7 +129,7 @@ void event_emit_cert_error(const char *digest, const char *reason)
 	snprintf(buf, sizeof(buf),
 	         "\"digest\":\"%s\",\"reason\":\"%s\"",
 	         esc_d, esc_r);
-	event_emit("cert_error", buf);
+	event_emit("cert_error", "%s", buf);
 }
 
 void event_emit_error(int code, const char *category,
@@ -143,7 +143,7 @@ void event_emit_error(int code, const char *category,
 	snprintf(buf, sizeof(buf),
 	         "\"code\":%d,\"category\":\"%s\",\"message\":\"%s\"",
 	         code, esc_c, esc_m);
-	event_emit("error", buf);
+	event_emit("error", "%s", buf);
 }
 
 void event_emit_tunnel_up(const char *ip, const char *d1,
@@ -154,5 +154,5 @@ void event_emit_tunnel_up(const char *ip, const char *d1,
 	snprintf(buf, sizeof(buf),
 	         "\"local_ip\":\"%s\",\"dns1\":\"%s\",\"dns2\":\"%s\"",
 	         ip, d1, d2);
-	event_emit("tunnel_up", buf);
+	event_emit("tunnel_up", "%s", buf);
 }
