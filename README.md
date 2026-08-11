@@ -10,7 +10,7 @@ On Windows, it uses an in-process PPP engine with
 
 It is compatible with Fortinet VPNs.
 
-OpenFortiVPN Manager v0.1.0
+OpenFortiVPN Manager v0.1.1
 ---------------------------
 
 This repository also ships a complete graphical VPN manager for Linux, macOS

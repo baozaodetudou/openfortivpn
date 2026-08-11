@@ -1,6 +1,6 @@
 [package]
 name = "openfortivpn-manager-headless"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Headless HTTPS and CLI manager for openfortivpn"
 license = "GPL-3.0-or-later"
