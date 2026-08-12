@@ -23,8 +23,9 @@ macOS 和 Windows。Linux 服务器还可以使用不依赖桌面的 headless �
 
 1. 打开应用，选择“添加配置”。
 2. 填写配置名称、VPN 地址、端口、用户名和 VPN 密码。
-3. 建议启用“保存到系统凭据存储”。密码会进入 macOS Keychain、Windows
-   Credential Manager 或 Linux Secret Service，不会写入 `profiles.json`。
+3. “保存到系统凭据存储”默认启用。密码会进入 macOS Keychain、Windows
+   Credential Manager 或 Linux Secret Service；`profiles.json` 只记录
+   `passwordStored` 状态，不记录密码明文。
 4. 点击“连接”。Linux/macOS 第一次会要求一次电脑管理员密码，用于安装
    root 所有的受限 helper 和配套 VPN 引擎；该密码不会保存。
 5. helper 安装后，正常连接、断开、重连、自动重连和重新启动应用都不再要求
@@ -88,6 +89,15 @@ API、配置文件和卸载方法见 [headless README](../headless/README.md)。
 
 应用会校验 helper 和引擎哈希。版本升级改变了系统组件，必须重新授权一次；同一
 版本的日常启动和连接不会重复询问。
+
+### 为什么密码不直接写进 profiles.json？
+
+`profiles.json` 会被备份、同步或用于排障，写入明文密码会造成不必要的泄露。
+应用把 VPN 密码交给操作系统凭据存储，并只在配置文件里记录“已保存”状态。
+普通启动不会逐个读取所有密码；连接该配置或启动自动连接时才按需读取。
+
+如果选择“不保存”，密码只在本次应用会话中有效。下次连接时会显示独立的 VPN
+密码输入框，不需要重新编辑服务器、端口等整份配置。
 
 ### 为什么异常断开后没有重试？
 

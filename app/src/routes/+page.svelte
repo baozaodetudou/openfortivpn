@@ -58,8 +58,13 @@
   let selectedProfileId = $state("");
   let draft = $state<VpnProfile>(blankProfile());
   let password = $state("");
-  let rememberPassword = $state(false);
+  let rememberPassword = $state(true);
   let editing = $state(false);
+  let credentialPrompt = $state<ProfileView | null>(null);
+  let connectionPassword = $state("");
+  let connectionRememberPassword = $state(true);
+  let credentialBusy = $state(false);
+  let credentialError = $state("");
   let loading = $state(true);
   let busy = $state(false);
   let errorMessage = $state("");
@@ -73,7 +78,6 @@
   let autostartBusy = $state(false);
   let autostartError = $state("");
   let privilegeStatus = $state<PrivilegeStatus | null>(null);
-  let privilegeInitialized = $state(false);
   let privilegeModalOpen = $state(false);
   let administratorPassword = $state("");
   let privilegeBusy = $state(false);
@@ -344,14 +348,6 @@
       engine = engineState;
       privilegeStatus = currentPrivilegeStatus;
       remoteAccess = currentRemoteAccess;
-      if (
-        !privilegeInitialized &&
-        currentPrivilegeStatus.required &&
-        !currentPrivilegeStatus.ready
-      ) {
-        privilegeModalOpen = true;
-      }
-      privilegeInitialized = true;
       if (!selectedProfileId && profiles.length > 0) {
         selectedProfileId = profiles[0].profile.id;
       }
@@ -369,8 +365,22 @@
   function createProfile() {
     draft = blankProfile();
     password = "";
-    rememberPassword = false;
+    rememberPassword = true;
     editing = true;
+  }
+
+  function openCredentialPrompt(view: ProfileView) {
+    credentialPrompt = view;
+    connectionPassword = "";
+    connectionRememberPassword = true;
+    credentialError = "";
+  }
+
+  function closeCredentialPrompt() {
+    if (credentialBusy) return;
+    credentialPrompt = null;
+    connectionPassword = "";
+    credentialError = "";
   }
 
   function editProfile(view: ProfileView) {
@@ -451,6 +461,11 @@
     const currentInstance = latestInstanceForProfile(view.profile.id);
     if (currentInstance && isActive(currentInstance.status)) return;
 
+    if (!view.hasSecret && !view.passwordStored) {
+      openCredentialPrompt(view);
+      return;
+    }
+
     if (view.profile.useSudo) {
       let currentPrivilegeStatus: PrivilegeStatus;
       try {
@@ -458,7 +473,6 @@
           "privilege_status",
         );
         privilegeStatus = currentPrivilegeStatus;
-        privilegeInitialized = true;
       } catch (error) {
         showError(`无法确认管理员权限状态：${errorText(error)}`);
         return;
@@ -472,11 +486,6 @@
       }
     }
 
-    if (!view.hasSecret) {
-      editProfile(view);
-      showError("请先输入密码；如需应用重启后仍可连接，请保存到系统凭据库");
-      return;
-    }
     busy = true;
     try {
       const instance = await invoke<InstanceView>("start_profile", {
@@ -485,9 +494,53 @@
       upsertInstance(instance);
       showSuccess("连接进程已启动");
     } catch (error) {
-      showError(error);
+      const message = errorText(error);
+      showError(message);
+      if (
+        message.includes("VPN 密码已不存在") ||
+        message.includes("VPN 密码无法使用") ||
+        message.includes("当前没有可用的 VPN 密码")
+      ) {
+        try {
+          const profileList = await invoke<ProfileView[]>("list_profiles");
+          profiles = profileList;
+          const current = profileList.find(
+            (entry) => entry.profile.id === view.profile.id,
+          );
+          if (current) openCredentialPrompt(current);
+        } catch {
+          // Keep the original connection error visible.
+        }
+      }
     } finally {
       busy = false;
+    }
+  }
+
+  async function saveCredentialAndConnect(event: SubmitEvent) {
+    event.preventDefault();
+    const current = credentialPrompt;
+    if (!current || credentialBusy || !connectionPassword) return;
+
+    credentialBusy = true;
+    credentialError = "";
+    try {
+      const saved = await invoke<ProfileView>("save_profile", {
+        input: {
+          profile: current.profile,
+          password: connectionPassword,
+          rememberPassword: connectionRememberPassword,
+        },
+      });
+      upsertProfile(saved);
+      credentialPrompt = null;
+      connectionPassword = "";
+      await startProfile(saved);
+    } catch (error) {
+      credentialError = errorText(error);
+    } finally {
+      connectionPassword = "";
+      credentialBusy = false;
     }
   }
 
@@ -698,7 +751,6 @@
         password: administratorPassword,
       });
       privilegeStatus = status;
-      privilegeInitialized = true;
       if (status.required && !status.ready) {
         throw new Error("系统未确认 helper 安装状态，请检查密码后重试");
       }
@@ -837,7 +889,9 @@
         <p class="settings-error" role="alert">{autostartError}</p>
       {/if}
       <p class="settings-note">
-        macOS/Linux 首次安装系统 VPN helper 后，自动连接和日常操作不再要求管理员密码。
+        {privilegeStatus?.required && !privilegeStatus.ready
+          ? "系统 VPN Helper 尚未安装；首次点击连接时安装一次，之后不再要求管理员密码。"
+          : "系统 VPN Helper 已就绪，日常连接不会要求管理员密码。"}
       </p>
       <button class="remote-settings-button" onclick={openRemoteSettings}>
         <span class:online={remoteAccess?.running} class="remote-dot"></span>
@@ -848,7 +902,7 @@
 
     <div class="sidebar-footer">
       <span>{engine?.platform ?? "desktop"}</span>
-      <span>v0.1.0</span>
+      <span>v0.1.2</span>
     </div>
   </aside>
 
@@ -1074,6 +1128,58 @@
   </div>
 {/if}
 
+{#if credentialPrompt}
+  <div class="modal-backdrop credential-backdrop" role="presentation">
+    <form
+      class="credential-modal"
+      aria-labelledby="credential-title"
+      onsubmit={saveCredentialAndConnect}
+    >
+      <div class="modal-heading">
+        <div>
+          <small>VPN CREDENTIAL</small>
+          <h2 id="credential-title">连接 {credentialPrompt.profile.name}</h2>
+        </div>
+        <button type="button" disabled={credentialBusy} onclick={closeCredentialPrompt}>×</button>
+      </div>
+      <p class="credential-description">
+        输入 VPN 账号密码。它与电脑管理员密码不同；默认安全保存到操作系统凭据库，以后连接无需重复输入。
+      </p>
+      <label class="credential-password">
+        <span>VPN 密码</span>
+        <input
+          type="password"
+          autocomplete="current-password"
+          maxlength="256"
+          required
+          disabled={credentialBusy}
+          bind:value={connectionPassword}
+          placeholder="输入 VPN 账号密码"
+        />
+      </label>
+      <label class:disabled={credentialPrompt.profile.autoConnect} class="toggle credential-save">
+        <input
+          type="checkbox"
+          bind:checked={connectionRememberPassword}
+          disabled={credentialBusy || credentialPrompt.profile.autoConnect}
+        />
+        <span></span>
+        <b>保存到系统凭据库（推荐）</b>
+      </label>
+      {#if credentialPrompt.profile.autoConnect}
+        <p class="credential-note">此配置启用了应用启动后自动连接，因此必须安全保存密码。</p>
+      {/if}
+      {#if credentialError}<div class="credential-error" role="alert">{credentialError}</div>{/if}
+      <div class="modal-actions">
+        <button type="button" class="secondary-button" disabled={credentialBusy} onclick={closeCredentialPrompt}>取消</button>
+        <button type="submit" class="primary-button" disabled={credentialBusy || !connectionPassword}>
+          {credentialBusy ? "正在保存…" : "保存并连接"}
+        </button>
+      </div>
+    </form>
+  </div>
+{/if}
+
 {#if privilegeModalOpen && privilegeStatus?.required}
   <div class="modal-backdrop privilege-backdrop" role="presentation">
     <div
@@ -1172,6 +1278,7 @@
           <input
             type="password"
             autocomplete="current-password"
+            maxlength="256"
             placeholder={draft.id
               ? rememberPassword
                 ? "留空则保留已有系统凭据"
@@ -1346,6 +1453,17 @@
   .toggle-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; } .toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; } .toggle input { position: absolute; opacity: 0; pointer-events: none; } .toggle span { position: relative; width: 28px; height: 16px; flex: 0 0 auto; border-radius: 999px; background: #28374b; transition: .18s; } .toggle span::after { position: absolute; top: 3px; left: 3px; width: 10px; height: 10px; border-radius: 50%; background: #8695aa; content: ""; transition: .18s; } .toggle input:checked + span { background: rgba(94,232,177,.28); } .toggle input:checked + span::after { left: 15px; background: var(--brand); } .toggle b { color: #acb9ca; font-size: 9px; font-weight: 650; }
   .modal-note { margin-top: 14px; padding: 10px 11px; border-radius: 9px; color: #8292a9; background: rgba(112,167,255,.055); font-size: 9px; line-height: 1.55; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; }
+  .credential-backdrop { z-index: 48; }
+  .credential-modal { width: min(470px, 94vw); padding: 24px; border: 1px solid rgba(94,232,177,.28); border-radius: 17px; background: #0c1727; box-shadow: 0 30px 90px rgba(0,0,0,.55); }
+  .credential-description { margin: -4px 0 17px; color: #aebdd0; font-size: 10px; line-height: 1.7; }
+  .credential-password span { display: block; margin: 0 0 7px 2px; color: #c4cfdf; font-size: 10px; font-weight: 650; }
+  .credential-password input { width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: rgba(3,10,18,.56); font-size: 11px; transition: border-color .15s; }
+  .credential-password input:focus { border-color: rgba(94,232,177,.5); }
+  .credential-password input::placeholder { color: #4f6077; }
+  .credential-save { width: fit-content; margin-top: 14px; }
+  .credential-save.disabled { cursor: not-allowed; opacity: .72; }
+  .credential-note { margin: 10px 0 0; color: #8fa3bc; font-size: 9px; line-height: 1.55; }
+  .credential-error { margin-top: 12px; padding: 10px 11px; border: 1px solid rgba(255,124,141,.24); border-radius: 9px; color: #ffc3cb; background: rgba(255,124,141,.08); font-size: 10px; line-height: 1.5; }
   .privilege-backdrop { z-index: 50; }
   .remote-backdrop { z-index: 55; }
   .remote-modal { width: min(620px, 94vw); max-height: 92vh; overflow-y: auto; padding: 24px; border: 1px solid rgba(94,232,177,.28); border-radius: 17px; background: #0c1727; box-shadow: 0 30px 90px rgba(0,0,0,.55); }

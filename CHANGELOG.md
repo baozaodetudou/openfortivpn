@@ -14,6 +14,19 @@ Releases
 This high level changelog is usually updated when a release is tagged.
 On the master branch there may be changes that are not (yet) described here.
 
+### OpenFortiVPN Manager 0.1.2
+
+* [-] avoid repeated administrator-password prompts by installing the restricted
+  helper only when the first VPN connection actually needs it
+* [-] keep VPN passwords in the operating-system credential store while
+  persisting only non-secret availability metadata in profile configuration
+* [-] load saved VPN credentials on demand and prevent stale startup reads from
+  overriding a user's latest password-storage choice
+* [+] add a focused save-and-connect prompt when a profile is missing its VPN
+  password, with secure saving enabled by default for new profiles
+* [-] reject passwords the bundled engine would silently alter or truncate and
+  harden profile and runtime-configuration file writes
+
 ### OpenFortiVPN Manager 0.1.1
 
 * [-] replace the placeholder application artwork with an original VPN tunnel
