@@ -315,7 +315,8 @@ jobs:
             \( -name '*.deb' -o -name '*.dmg' \) -print0 |
             while IFS= read -r -d '' file; do
               hash=$(shasum -a 256 "$file" | awk '{print $1}')
-              printf '%s  %s\n' "$hash" "$(basename "$file")"
+              asset_name=$(basename "$file" | tr ' ' '.')
+              printf '%s  %s\n' "$hash" "$asset_name"
             done | sort > "$checksum_file"
           test -s "$checksum_file"
 
@@ -491,7 +492,8 @@ jobs:
             Where-Object { $_.Extension -in '.exe', '.msi' } |
             Sort-Object FullName |
             ForEach-Object {
-              "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
+              $assetName = $_.Name -replace ' ', '.'
+              "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $assetName
             }
           if (-not $lines) { throw "No Windows installers were produced" }
           $lines | Set-Content -Encoding utf8 $checksumFile
