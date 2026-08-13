@@ -502,7 +502,7 @@ fn delete_keychain_password(profile_id: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn load_local_credentials_file(path: &std::path::Path) -> Result<BTreeMap<String, String>, String> {
     if !path.exists() {
         return Ok(BTreeMap::new());
@@ -530,7 +530,7 @@ fn load_local_credentials_file(path: &std::path::Path) -> Result<BTreeMap<String
     Ok(credentials)
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn persist_local_credentials_file(
     path: &std::path::Path,
     credentials: &BTreeMap<String, String>,
