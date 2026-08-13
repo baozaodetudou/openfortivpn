@@ -20,7 +20,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::tray::{TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, State, Wry};
+use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 use uuid::Uuid;
 #[cfg(windows)]
 use windows_sys::Win32::System::Console::{
@@ -144,12 +147,46 @@ struct RuntimeStore {
     stale_processes: BTreeMap<String, RuntimeProcessRecord>,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+struct DesktopPreferences {
+    close_to_tray: bool,
+    start_minimized: bool,
+}
+
+impl Default for DesktopPreferences {
+    fn default() -> Self {
+        Self {
+            close_to_tray: true,
+            start_minimized: true,
+        }
+    }
+}
+
+#[derive(Clone)]
+enum TrayAction {
+    Connect(String),
+    Disconnect(String),
+    Reconnect(String),
+}
+
+struct TrayUi {
+    status_item: MenuItem<Wry>,
+    window_item: MenuItem<Wry>,
+    disconnect_all_item: MenuItem<Wry>,
+    profiles_menu: Submenu<Wry>,
+}
+
 #[derive(Default)]
 struct AppState {
     store: Mutex<RuntimeStore>,
     lifecycle: Mutex<()>,
+    desktop_preferences: Mutex<DesktopPreferences>,
+    tray_ui: Mutex<Option<TrayUi>>,
+    tray_actions: Mutex<HashMap<String, TrayAction>>,
     privilege_ready: AtomicBool,
     shutting_down: AtomicBool,
+    quit_requested: AtomicBool,
     exit_cleanup_complete: AtomicBool,
 }
 
@@ -196,6 +233,13 @@ struct AppExitBlocked {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct TrayActionError {
+    profile_id: Option<String>,
+    message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct PrivilegeStatus {
     required: bool,
     ready: bool,
@@ -203,6 +247,10 @@ struct PrivilegeStatus {
 }
 
 const KEYRING_SERVICE: &str = "com.baozaodetudou.openfortivpn";
+const TRAY_ID: &str = "openfortivpn-manager-tray";
+const TRAY_TOGGLE_WINDOW_ID: &str = "tray-toggle-window";
+const TRAY_DISCONNECT_ALL_ID: &str = "tray-disconnect-all";
+const TRAY_QUIT_ID: &str = "tray-quit";
 const MAX_RETAINED_LOGS: usize = 2_000;
 const REMOTE_TOKEN_PROFILE_ID: &str = "__remote_access_token";
 const ENGINE_PASSWORD_MAX_BYTES: usize = 256;
@@ -230,11 +278,101 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map_err(|error| format!("无法确定应用数据目录：{error}"))?;
     fs::create_dir_all(&path).map_err(|error| format!("无法创建应用数据目录：{error}"))?;
+    #[cfg(unix)]
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("无法保护应用数据目录：{error}"))?;
     Ok(path)
 }
 
 fn profiles_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir(app)?.join("profiles.json"))
+}
+
+fn desktop_preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join("desktop-preferences.json"))
+}
+
+fn parse_desktop_preferences(contents: &str) -> Result<DesktopPreferences, String> {
+    serde_json::from_str(contents).map_err(|error| format!("桌面设置格式错误：{error}"))
+}
+
+fn load_desktop_preferences(app: &AppHandle) -> Result<DesktopPreferences, String> {
+    let path = desktop_preferences_path(app)?;
+    if !path.exists() {
+        return Ok(DesktopPreferences::default());
+    }
+    let contents = fs::read_to_string(&path)
+        .map_err(|error| format!("无法读取桌面设置 {}：{error}", path.display()))?;
+    parse_desktop_preferences(&contents)
+}
+
+fn persist_desktop_preferences(
+    app: &AppHandle,
+    preferences: &DesktopPreferences,
+) -> Result<(), String> {
+    let path = desktop_preferences_path(app)?;
+    let contents = serde_json::to_string_pretty(preferences)
+        .map_err(|error| format!("无法序列化桌面设置：{error}"))?;
+    #[cfg(unix)]
+    {
+        let temporary = path.with_file_name(format!(".desktop-preferences.{}.tmp", Uuid::new_v4()));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|error| format!("无法创建临时桌面设置：{error}"))?;
+        if let Err(error) = file
+            .write_all(contents.as_bytes())
+            .and_then(|()| file.sync_all())
+        {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("无法保存临时桌面设置：{error}"));
+        }
+        if let Err(error) = fs::rename(&temporary, &path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("无法保存桌面设置 {}：{error}", path.display()));
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("无法设置桌面设置权限：{error}"))?;
+    }
+    #[cfg(not(unix))]
+    fs::write(&path, contents)
+        .map_err(|error| format!("无法保存桌面设置 {}：{error}", path.display()))?;
+    Ok(())
+}
+
+fn should_hide_window_on_close(
+    preferences: &DesktopPreferences,
+    quit_requested: bool,
+    shutting_down: bool,
+) -> bool {
+    preferences.close_to_tray && !quit_requested && !shutting_down
+}
+
+fn should_start_hidden(launched_from_autostart: bool, start_minimized: bool) -> bool {
+    launched_from_autostart && start_minimized
+}
+
+fn tray_status_text(statuses: &[&str]) -> String {
+    let connected = statuses
+        .iter()
+        .filter(|status| **status == "connected")
+        .count();
+    let connecting = statuses
+        .iter()
+        .filter(|status| matches!(**status, "starting" | "connecting" | "disconnecting"))
+        .count();
+    let failed = statuses.contains(&"failed");
+    match (connected, connecting, failed) {
+        (connected, connecting, _) if connected > 0 && connecting > 0 => {
+            format!("已连接 {connected} 个 · 正在连接 {connecting} 个")
+        }
+        (connected, _, _) if connected > 0 => format!("已连接 {connected} 个 VPN"),
+        (_, connecting, _) if connecting > 0 => format!("正在连接 {connecting} 个 VPN"),
+        (_, _, true) => "VPN 未连接 · 最近连接失败".to_string(),
+        _ => "VPN 未连接".to_string(),
+    }
 }
 
 fn parse_profile_file(contents: &str) -> Result<LoadedProfiles, String> {
@@ -340,8 +478,8 @@ fn lock_credential_access() -> Result<std::sync::MutexGuard<'static, ()>, String
         .map_err(|_| "系统凭据访问状态已损坏".to_string())
 }
 
-fn read_stored_password(profile_id: &str) -> Result<Option<String>, String> {
-    let _guard = lock_credential_access()?;
+#[cfg(not(target_os = "macos"))]
+fn read_keychain_password(profile_id: &str) -> Result<Option<String>, String> {
     match credential_entry(profile_id)?.get_password() {
         Ok(password) => Ok(Some(password)),
         Err(keyring::Error::NoEntry) => Ok(None),
@@ -349,19 +487,134 @@ fn read_stored_password(profile_id: &str) -> Result<Option<String>, String> {
     }
 }
 
-fn store_password(profile_id: &str, password: &str) -> Result<(), String> {
-    let _guard = lock_credential_access()?;
+#[cfg(not(target_os = "macos"))]
+fn store_keychain_password(profile_id: &str, password: &str) -> Result<(), String> {
     credential_entry(profile_id)?
         .set_password(password)
         .map_err(|error| format!("无法将密码保存到系统凭据库：{error}"))
 }
 
-fn delete_stored_password(profile_id: &str) -> Result<(), String> {
-    let _guard = lock_credential_access()?;
+#[cfg(not(target_os = "macos"))]
+fn delete_keychain_password(profile_id: &str) -> Result<(), String> {
     match credential_entry(profile_id)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(error) => Err(format!("无法从系统凭据库删除密码：{error}")),
     }
+}
+
+#[cfg(unix)]
+fn load_local_credentials_file(path: &std::path::Path) -> Result<BTreeMap<String, String>, String> {
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("无法检查本机凭据文件 {}：{error}", path.display()))?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o777 != 0o600
+    {
+        return Err("本机凭据文件必须由当前用户拥有、使用 0600 且不能是符号链接".to_string());
+    }
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("无法读取本机凭据文件 {}：{error}", path.display()))?;
+    let credentials: BTreeMap<String, String> = serde_json::from_str(&contents)
+        .map_err(|error| format!("本机凭据文件格式错误：{error}"))?;
+    for (profile_id, password) in &credentials {
+        if profile_id.trim().is_empty() || profile_id == REMOTE_TOKEN_PROFILE_ID {
+            return Err("本机凭据文件包含无效的配置 ID".to_string());
+        }
+        validate_password(password)
+            .map_err(|message| format!("本机凭据文件中的 VPN 密码无法使用：{message}"))?;
+    }
+    Ok(credentials)
+}
+
+#[cfg(unix)]
+fn persist_local_credentials_file(
+    path: &std::path::Path,
+    credentials: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if path.exists() {
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|error| format!("无法检查本机凭据文件 {}：{error}", path.display()))?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o777 != 0o600
+        {
+            return Err("拒绝覆盖所有者、权限或文件类型异常的本机凭据文件".to_string());
+        }
+    }
+    let contents = serde_json::to_vec_pretty(credentials)
+        .map_err(|error| format!("无法序列化本机凭据：{error}"))?;
+    let temporary = path.with_file_name(format!(".credentials.{}.tmp", Uuid::new_v4()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .map_err(|error| format!("无法创建临时凭据文件：{error}"))?;
+    if let Err(error) = file.write_all(&contents).and_then(|()| file.sync_all()) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("无法保存临时凭据文件：{error}"));
+    }
+    drop(file);
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("无法保存本机凭据文件 {}：{error}", path.display()));
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("无法设置本机凭据文件权限：{error}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn local_credentials_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join("credentials.json"))
+}
+
+#[cfg(target_os = "macos")]
+fn read_stored_password(app: &AppHandle, profile_id: &str) -> Result<Option<String>, String> {
+    let _guard = lock_credential_access()?;
+    let path = local_credentials_path(app)?;
+    Ok(load_local_credentials_file(&path)?.get(profile_id).cloned())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_stored_password(_app: &AppHandle, profile_id: &str) -> Result<Option<String>, String> {
+    let _guard = lock_credential_access()?;
+    read_keychain_password(profile_id)
+}
+
+#[cfg(target_os = "macos")]
+fn store_password(app: &AppHandle, profile_id: &str, password: &str) -> Result<(), String> {
+    let _guard = lock_credential_access()?;
+    let path = local_credentials_path(app)?;
+    let mut credentials = load_local_credentials_file(&path)?;
+    credentials.insert(profile_id.to_string(), password.to_string());
+    persist_local_credentials_file(&path, &credentials)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn store_password(_app: &AppHandle, profile_id: &str, password: &str) -> Result<(), String> {
+    let _guard = lock_credential_access()?;
+    store_keychain_password(profile_id, password)
+}
+
+#[cfg(target_os = "macos")]
+fn delete_stored_password(app: &AppHandle, profile_id: &str) -> Result<(), String> {
+    let _guard = lock_credential_access()?;
+    let path = local_credentials_path(app)?;
+    let mut credentials = load_local_credentials_file(&path)?;
+    credentials.remove(profile_id);
+    persist_local_credentials_file(&path, &credentials)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn delete_stored_password(_app: &AppHandle, profile_id: &str) -> Result<(), String> {
+    let _guard = lock_credential_access()?;
+    delete_keychain_password(profile_id)
 }
 
 fn validate_line_value(label: &str, value: &str) -> Result<(), String> {
@@ -393,11 +646,14 @@ fn validate_password(password: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn read_usable_stored_password(profile_id: &str) -> Result<Option<String>, String> {
-    read_stored_password(profile_id)?
+fn read_usable_stored_password(
+    app: &AppHandle,
+    profile_id: &str,
+) -> Result<Option<String>, String> {
+    read_stored_password(app, profile_id)?
         .map(|password| {
             validate_password(&password)
-                .map_err(|message| format!("系统凭据库中的 VPN 密码无法使用：{message}"))?;
+                .map_err(|message| format!("已保存的 VPN 密码无法使用：{message}"))?;
             Ok(password)
         })
         .transpose()
@@ -947,6 +1203,7 @@ fn cleanup_stale_runtime_processes(app: &AppHandle) -> Result<(), String> {
 
 fn emit_instance(app: &AppHandle, view: &InstanceView) {
     let _ = app.emit("vpn-instance-changed", view.clone());
+    schedule_tray_refresh(app);
 }
 
 fn profile_has_running_instance(store: &RuntimeStore, profile_id: &str) -> bool {
@@ -1163,6 +1420,7 @@ fn handle_engine_event(app: &AppHandle, instance_id: &str, payload: &Value) {
         }
         "cert_error" => {
             record_instance_failure(app, instance_id, "服务器证书验证失败".to_string(), true);
+            show_main_window(app);
         }
         _ => {}
     }
@@ -1212,7 +1470,8 @@ where
                 record_instance_failure(
                     &app,
                     &instance_id,
-                    "VPN 身份验证失败，请检查账号和密码".to_string(),
+                    "VPN 身份验证失败：网关拒绝了账号、密码或认证策略；请重新输入密码并确认 Realm"
+                        .to_string(),
                     true,
                 );
             }
@@ -1497,6 +1756,32 @@ fn list_profiles(state: State<'_, AppState>) -> Result<Vec<ProfileView>, String>
         .collect())
 }
 
+#[tauri::command]
+fn get_desktop_preferences(state: State<'_, AppState>) -> Result<DesktopPreferences, String> {
+    state
+        .desktop_preferences
+        .lock()
+        .map(|preferences| preferences.clone())
+        .map_err(|_| "桌面设置状态已损坏".to_string())
+}
+
+#[tauri::command]
+fn update_desktop_preferences(
+    app: AppHandle,
+    preferences: DesktopPreferences,
+) -> Result<DesktopPreferences, String> {
+    persist_desktop_preferences(&app, &preferences)?;
+    let state = app.state::<AppState>();
+    let mut current = state
+        .desktop_preferences
+        .lock()
+        .map_err(|_| "桌面设置状态已损坏".to_string())?;
+    *current = preferences.clone();
+    drop(current);
+    schedule_tray_refresh(&app);
+    Ok(preferences)
+}
+
 fn reserve_profile_mutation(app: &AppHandle, profile_id: &str) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mut store = state
@@ -1534,7 +1819,7 @@ fn save_profile(app: AppHandle, mut input: SaveProfileInput) -> Result<ProfileVi
     }
 
     if input.profile.auto_connect && !input.remember_password {
-        return Err("自动连接需要将密码保存到系统凭据库".to_string());
+        return Err("自动连接需要将密码保存到本机凭据存储".to_string());
     }
 
     let profile_id = input.profile.id.clone();
@@ -1549,26 +1834,26 @@ fn save_profile(app: AppHandle, mut input: SaveProfileInput) -> Result<ProfileVi
             )
         };
 
-        let mut password_from_keyring = None;
+        let mut password_from_storage = None;
         if input.remember_password {
             if let Some(password) = password.as_deref() {
-                store_password(&profile_id, password)?;
+                store_password(&app, &profile_id, password)?;
             } else if was_stored {
                 // An empty password while editing means keep the existing credential.
             } else {
-                password_from_keyring = read_usable_stored_password(&profile_id)?;
-                if password_from_keyring.is_none() {
-                    return Err("请先输入密码，再保存到系统凭据库".to_string());
+                password_from_storage = read_usable_stored_password(&app, &profile_id)?;
+                if password_from_storage.is_none() {
+                    return Err("请先输入密码，再保存到本机凭据存储".to_string());
                 }
             }
         } else if was_stored || was_unknown {
-            delete_stored_password(&profile_id)?;
+            delete_stored_password(&app, &profile_id)?;
         }
 
         let view = {
             let state = app.state::<AppState>();
             let mut store = lock_store(&state)?;
-            let password = password.or(password_from_keyring);
+            let password = password.or(password_from_storage);
             let mut profiles = store.profiles.clone();
             let mut stored_secret_profiles = store.stored_secret_profiles.clone();
             let mut unknown_secret_profiles = store.unknown_secret_profiles.clone();
@@ -1607,6 +1892,8 @@ fn save_profile(app: AppHandle, mut input: SaveProfileInput) -> Result<ProfileVi
 
 #[tauri::command]
 fn delete_profile(app: AppHandle, profile_id: String) -> Result<(), String> {
+    disconnect_profile_impl(app.clone(), profile_id.clone())?;
+    wait_for_profile_to_stop(&app, &profile_id)?;
     reserve_profile_mutation(&app, &profile_id)?;
     let result = (|| -> Result<(), String> {
         let was_stored = {
@@ -1620,20 +1907,12 @@ fn delete_profile(app: AppHandle, profile_id: String) -> Result<(), String> {
         };
 
         if was_stored {
-            delete_stored_password(&profile_id)?;
+            delete_stored_password(&app, &profile_id)?;
         }
 
         let state = app.state::<AppState>();
         let mut store = lock_store(&state)?;
-        store.profiles.remove(&profile_id);
-        store.secrets.remove(&profile_id);
-        store.stored_secret_profiles.remove(&profile_id);
-        store.unknown_secret_profiles.remove(&profile_id);
-        store.reconnect_attempts.remove(&profile_id);
-        store.reconnect_generations.remove(&profile_id);
-        store
-            .instances
-            .retain(|_, instance| instance.view.profile_id != profile_id);
+        remove_profile_runtime_state(&mut store, &profile_id);
         persist_profiles(
             &app,
             &store.profiles,
@@ -1646,6 +1925,18 @@ fn delete_profile(app: AppHandle, profile_id: String) -> Result<(), String> {
     })();
     release_profile_mutation(&app, &profile_id);
     result
+}
+
+fn remove_profile_runtime_state(store: &mut RuntimeStore, profile_id: &str) {
+    store.profiles.remove(profile_id);
+    store.secrets.remove(profile_id);
+    store.stored_secret_profiles.remove(profile_id);
+    store.unknown_secret_profiles.remove(profile_id);
+    store.reconnect_attempts.remove(profile_id);
+    store.reconnect_generations.remove(profile_id);
+    store
+        .instances
+        .retain(|_, instance| instance.view.profile_id != profile_id);
 }
 
 #[tauri::command]
@@ -1882,6 +2173,36 @@ enum StartOrigin {
 }
 
 const AUTO_RECONNECT_CANCELLED: &str = "自动重连已取消";
+
+fn reuse_running_instance_for_start(origin: StartOrigin) -> bool {
+    matches!(origin, StartOrigin::User)
+}
+
+fn reserve_start_generation(
+    store: &mut RuntimeStore,
+    profile_id: &str,
+    origin: StartOrigin,
+) -> Result<u64, String> {
+    match origin {
+        StartOrigin::AutoReconnect(expected) => {
+            let current = store
+                .reconnect_generations
+                .get(profile_id)
+                .copied()
+                .unwrap_or_default();
+            if current != expected {
+                return Err(AUTO_RECONNECT_CANCELLED.to_string());
+            }
+            // This value is a cancellation token, not an attempt counter. Keep
+            // it stable across transient automatic-start failures so the retry
+            // loop remains valid until a user action explicitly invalidates it.
+            Ok(expected)
+        }
+        StartOrigin::User | StartOrigin::Startup => {
+            Ok(bump_reconnect_generation(store, profile_id))
+        }
+    }
+}
 
 #[cfg(unix)]
 fn terminate_unregistered_process_group(
@@ -2126,6 +2447,7 @@ fn emit_profiles_changed(app: &AppHandle) {
     if let Ok(profiles) = list_profiles(app.state()) {
         let _ = app.emit("vpn-profiles-changed", profiles);
     }
+    schedule_tray_refresh(app);
 }
 
 fn clear_missing_stored_password(app: &AppHandle, profile_id: &str) -> Result<(), String> {
@@ -2168,11 +2490,11 @@ fn resolve_profile_password(
         return Err("当前没有可用的 VPN 密码，请输入密码后再连接".to_string());
     }
 
-    let password = match read_usable_stored_password(profile_id)? {
+    let password = match read_usable_stored_password(app, profile_id)? {
         Some(password) => password,
         None => {
             clear_missing_stored_password(app, profile_id)?;
-            return Err("系统凭据库中的 VPN 密码已不存在，请重新输入并保存".to_string());
+            return Err("本机凭据存储中的 VPN 密码已不存在，请重新输入并保存".to_string());
         }
     };
     let state = app.state::<AppState>();
@@ -2218,8 +2540,25 @@ fn start_profile_impl(
                 "检测到上次异常退出遗留的 VPN 进程，请先安装系统 helper 完成清理".to_string(),
             );
         }
-        if profile_connection_in_progress(&store, &profile_id) {
-            return Err("该配置已有连接，请先断开后再连接".to_string());
+        if let Some(instance) = store
+            .instances
+            .values()
+            .filter(|instance| instance.view.profile_id == profile_id && instance.process_running)
+            .max_by_key(|instance| {
+                (
+                    instance.view.profile_generation,
+                    instance.view.started_at,
+                    instance.view.revision,
+                )
+            })
+        {
+            if reuse_running_instance_for_start(origin) {
+                return Ok(instance.view.clone());
+            }
+            return Err("该配置已有连接".to_string());
+        }
+        if store.starting_profiles.contains(&profile_id) {
+            return Err("该配置正在建立连接，请勿重复点击".to_string());
         }
         let profile = store
             .profiles
@@ -2228,22 +2567,7 @@ fn start_profile_impl(
             .ok_or_else(|| "找不到指定配置".to_string())?;
         let session_password = store.secrets.get(&profile_id).cloned();
         let password_stored = store.stored_secret_profiles.contains(&profile_id);
-        let profile_generation = match origin {
-            StartOrigin::AutoReconnect(expected) => {
-                let current = store
-                    .reconnect_generations
-                    .get(&profile_id)
-                    .copied()
-                    .unwrap_or_default();
-                if current != expected {
-                    return Err(AUTO_RECONNECT_CANCELLED.to_string());
-                }
-                bump_reconnect_generation(&mut store, &profile_id)
-            }
-            StartOrigin::User | StartOrigin::Startup => {
-                bump_reconnect_generation(&mut store, &profile_id)
-            }
-        };
+        let profile_generation = reserve_start_generation(&mut store, &profile_id, origin)?;
         store.starting_profiles.insert(profile_id.clone());
         (
             profile,
@@ -2456,6 +2780,88 @@ fn stop_instance(
     Ok(())
 }
 
+fn profile_is_active_or_starting(app: &AppHandle, profile_id: &str) -> bool {
+    app.state::<AppState>()
+        .store
+        .lock()
+        .map(|store| profile_connection_in_progress(&store, profile_id))
+        .unwrap_or(false)
+}
+
+fn wait_for_profile_to_stop(app: &AppHandle, profile_id: &str) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        if !profile_is_active_or_starting(app, profile_id) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Err("等待旧连接断开超时，请确认进程状态后重试".to_string())
+}
+
+fn disconnect_profile_impl(app: AppHandle, profile_id: String) -> Result<(), String> {
+    let instance_id = app
+        .state::<AppState>()
+        .store
+        .lock()
+        .map_err(|_| "内部运行状态已损坏".to_string())?
+        .instances
+        .values()
+        .filter(|instance| instance.view.profile_id == profile_id)
+        .max_by_key(|instance| {
+            (
+                instance.process_running,
+                instance.view.started_at,
+                instance.view.revision,
+            )
+        })
+        .map(|instance| instance.view.id.clone())
+        .unwrap_or_default();
+    stop_instance(
+        app.clone(),
+        app.state::<AppState>(),
+        instance_id,
+        Some(profile_id),
+    )
+}
+
+fn reconnect_profile_impl(app: AppHandle, profile_id: String) -> Result<InstanceView, String> {
+    disconnect_profile_impl(app.clone(), profile_id.clone())?;
+    wait_for_profile_to_stop(&app, &profile_id)?;
+    start_profile_impl(app, profile_id, StartOrigin::User)
+}
+
+#[tauri::command]
+fn reconnect_profile(app: AppHandle, profile_id: String) -> Result<InstanceView, String> {
+    reconnect_profile_impl(app, profile_id)
+}
+
+#[tauri::command]
+fn disconnect_all(app: AppHandle) -> Result<(), String> {
+    let profile_ids = app
+        .state::<AppState>()
+        .store
+        .lock()
+        .map_err(|_| "内部运行状态已损坏".to_string())?
+        .profiles
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut errors = Vec::new();
+    for profile_id in profile_ids {
+        if profile_is_active_or_starting(&app, &profile_id) {
+            if let Err(message) = disconnect_profile_impl(app.clone(), profile_id) {
+                errors.push(message);
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("部分连接无法断开：{}", errors.join("；")))
+    }
+}
+
 #[cfg(windows)]
 fn send_windows_ctrl_break(pid: u32) -> Result<(), String> {
     // The engine installs a CTRL_BREAK handler that leaves its I/O loop and
@@ -2629,7 +3035,7 @@ fn load_startup_credentials(
                 results.push((
                     profile.clone(),
                     was_unknown,
-                    read_usable_stored_password(&profile.id),
+                    read_usable_stored_password(&app, &profile.id),
                 ));
             } else if profile.auto_connect && !was_stored {
                 credential_errors.push(AutoConnectError {
@@ -2661,7 +3067,7 @@ fn load_startup_credentials(
                             credential_errors.push(AutoConnectError {
                                 profile_id: profile.id,
                                 profile_name: profile.name,
-                                message: "系统凭据库中的 VPN 密码已不存在，请重新输入并保存"
+                                message: "本机凭据存储中的 VPN 密码已不存在，请重新输入并保存"
                                     .to_string(),
                             });
                         }
@@ -2679,9 +3085,8 @@ fn load_startup_credentials(
                         });
                     }
                     Err(_) if was_unknown => {
-                        // A legacy profile may have a keychain item that currently requires
-                        // user approval. Record the secure-storage intent so future launches
-                        // do not prompt for every profile; connection retries it on demand.
+                        // Preserve a legacy profile's storage intent after a transient
+                        // credential-backend error; connection retries it on demand.
                         metadata_changed |= store.stored_secret_profiles.insert(profile.id.clone());
                         metadata_changed |= store.unknown_secret_profiles.remove(&profile.id);
                     }
@@ -2714,6 +3119,368 @@ fn start_remote_access(app: AppHandle) {
             let _ = app.emit("remote-access-error", remote::RemoteAccessError { message });
         }
     });
+}
+
+#[derive(Clone)]
+struct TrayProfileSnapshot {
+    id: String,
+    name: String,
+    status: String,
+    active: bool,
+    starting: bool,
+}
+
+fn menu_text(value: &str) -> String {
+    value.replace('&', "&&")
+}
+
+fn show_main_window(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    let _ = app.set_dock_visibility(true);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    schedule_tray_refresh(app);
+}
+
+fn hide_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    #[cfg(target_os = "macos")]
+    let _ = app.set_dock_visibility(false);
+    schedule_tray_refresh(app);
+}
+
+fn schedule_tray_refresh(app: &AppHandle) {
+    let app = app.clone();
+    thread::spawn(move || refresh_tray(&app));
+}
+
+fn tray_profile_snapshots(app: &AppHandle) -> Vec<TrayProfileSnapshot> {
+    let state = app.state::<AppState>();
+    let Ok(store) = state.store.lock() else {
+        return Vec::new();
+    };
+    store
+        .profiles
+        .values()
+        .map(|profile| {
+            let instance = store
+                .instances
+                .values()
+                .filter(|instance| instance.view.profile_id == profile.id)
+                .max_by_key(|instance| {
+                    (
+                        instance.process_running,
+                        instance.view.started_at,
+                        instance.view.revision,
+                    )
+                });
+            let active = instance.is_some_and(|instance| instance.process_running);
+            let starting = store.starting_profiles.contains(&profile.id);
+            let status = if starting && !active {
+                "starting".to_string()
+            } else {
+                instance
+                    .map(|instance| instance.view.status.clone())
+                    .unwrap_or_else(|| "disconnected".to_string())
+            };
+            TrayProfileSnapshot {
+                id: profile.id.clone(),
+                name: profile.name.clone(),
+                status,
+                active,
+                starting,
+            }
+        })
+        .collect()
+}
+
+fn tray_profile_status_label(status: &str) -> &'static str {
+    match status {
+        "starting" => "正在准备连接",
+        "connecting" => "正在连接",
+        "connected" => "已连接",
+        "disconnecting" => "正在断开",
+        "failed" => "连接失败",
+        _ => "未连接",
+    }
+}
+
+fn tray_profile_title(profile: &TrayProfileSnapshot) -> String {
+    let indicator = match profile.status.as_str() {
+        "connected" => "●",
+        "starting" | "connecting" | "disconnecting" => "◐",
+        "failed" => "!",
+        _ => "○",
+    };
+    format!("{indicator} {}", menu_text(&profile.name))
+}
+
+fn refresh_tray(app: &AppHandle) {
+    let profiles = tray_profile_snapshots(app);
+    let statuses = profiles
+        .iter()
+        .map(|profile| profile.status.as_str())
+        .collect::<Vec<_>>();
+    let status_text = tray_status_text(&statuses);
+    let any_active = profiles
+        .iter()
+        .any(|profile| profile.active || profile.starting);
+    let window_visible = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    let mut actions = HashMap::new();
+
+    let state = app.state::<AppState>();
+    let Ok(mut tray_ui_guard) = state.tray_ui.lock() else {
+        return;
+    };
+    let Some(tray_ui) = tray_ui_guard.as_mut() else {
+        return;
+    };
+
+    let _ = tray_ui.status_item.set_text(format!("状态：{status_text}"));
+    let _ = tray_ui.window_item.set_text(if window_visible {
+        "隐藏管理器"
+    } else {
+        "打开管理器"
+    });
+    let _ = tray_ui.disconnect_all_item.set_enabled(any_active);
+    while tray_ui
+        .profiles_menu
+        .items()
+        .map(|items| !items.is_empty())
+        .unwrap_or(false)
+    {
+        let _ = tray_ui.profiles_menu.remove_at(0);
+    }
+
+    if profiles.is_empty() {
+        if let Ok(empty) = MenuItem::new(app, "尚无 VPN 配置", false, None::<&str>) {
+            let _ = tray_ui.profiles_menu.append(&empty);
+        }
+    } else {
+        for profile in &profiles {
+            let Ok(profile_menu) = Submenu::new(app, tray_profile_title(profile), true) else {
+                continue;
+            };
+            if let Ok(status) = MenuItem::new(
+                app,
+                format!("状态：{}", tray_profile_status_label(&profile.status)),
+                false,
+                None::<&str>,
+            ) {
+                let _ = profile_menu.append(&status);
+            }
+            if let Ok(separator) = PredefinedMenuItem::separator(app) {
+                let _ = profile_menu.append(&separator);
+            }
+
+            let connect_id = format!("tray-action-{}", Uuid::new_v4());
+            if let Ok(connect) = MenuItem::with_id(
+                app,
+                connect_id.clone(),
+                "连接",
+                !profile.active && !profile.starting,
+                None::<&str>,
+            ) {
+                let _ = profile_menu.append(&connect);
+                actions.insert(connect_id, TrayAction::Connect(profile.id.clone()));
+            }
+
+            let reconnect_id = format!("tray-action-{}", Uuid::new_v4());
+            if let Ok(reconnect) = MenuItem::with_id(
+                app,
+                reconnect_id.clone(),
+                "重新连接",
+                profile.active && profile.status != "disconnecting",
+                None::<&str>,
+            ) {
+                let _ = profile_menu.append(&reconnect);
+                actions.insert(reconnect_id, TrayAction::Reconnect(profile.id.clone()));
+            }
+
+            let disconnect_id = format!("tray-action-{}", Uuid::new_v4());
+            if let Ok(disconnect) = MenuItem::with_id(
+                app,
+                disconnect_id.clone(),
+                "断开连接",
+                (profile.active || profile.starting) && profile.status != "disconnecting",
+                None::<&str>,
+            ) {
+                let _ = profile_menu.append(&disconnect);
+                actions.insert(disconnect_id, TrayAction::Disconnect(profile.id.clone()));
+            }
+            let _ = tray_ui.profiles_menu.append(&profile_menu);
+        }
+    }
+    drop(tray_ui_guard);
+    if let Ok(mut current_actions) = state.tray_actions.lock() {
+        *current_actions = actions;
+    }
+
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(format!("OpenFortiVPN Manager · {status_text}")));
+        let title = if statuses
+            .iter()
+            .filter(|status| **status == "connected")
+            .count()
+            > 0
+        {
+            format!(
+                "VPN · {}",
+                statuses
+                    .iter()
+                    .filter(|status| **status == "connected")
+                    .count()
+            )
+        } else if statuses
+            .iter()
+            .any(|status| matches!(*status, "starting" | "connecting" | "disconnecting"))
+        {
+            "VPN …".to_string()
+        } else {
+            "VPN".to_string()
+        };
+        let _ = tray.set_title(Some(title));
+    }
+}
+
+fn emit_tray_action_error(app: &AppHandle, profile_id: Option<String>, message: String) {
+    show_main_window(app);
+    let _ = app.emit(
+        "vpn-tray-action-error",
+        TrayActionError {
+            profile_id,
+            message,
+        },
+    );
+}
+
+fn run_tray_profile_action(app: AppHandle, action: TrayAction) {
+    thread::spawn(move || {
+        let (profile_id, result) = match action {
+            TrayAction::Connect(profile_id) => {
+                let result = start_profile_impl(app.clone(), profile_id.clone(), StartOrigin::User)
+                    .map(|_| ());
+                (profile_id, result)
+            }
+            TrayAction::Disconnect(profile_id) => {
+                let result = disconnect_profile_impl(app.clone(), profile_id.clone());
+                (profile_id, result)
+            }
+            TrayAction::Reconnect(profile_id) => {
+                let result = reconnect_profile_impl(app.clone(), profile_id.clone()).map(|_| ());
+                (profile_id, result)
+            }
+        };
+        if let Err(message) = result {
+            emit_tray_action_error(&app, Some(profile_id), message);
+        } else {
+            schedule_tray_refresh(&app);
+        }
+    });
+}
+
+fn request_app_quit(app: &AppHandle) {
+    app.state::<AppState>()
+        .quit_requested
+        .store(true, Ordering::SeqCst);
+    app.exit(0);
+}
+
+fn handle_tray_menu_event(app: &AppHandle, id: &str) {
+    match id {
+        TRAY_TOGGLE_WINDOW_ID => {
+            let visible = app
+                .get_webview_window("main")
+                .and_then(|window| window.is_visible().ok())
+                .unwrap_or(false);
+            if visible {
+                hide_main_window(app);
+            } else {
+                show_main_window(app);
+            }
+        }
+        TRAY_DISCONNECT_ALL_ID => {
+            let app = app.clone();
+            thread::spawn(move || {
+                if let Err(message) = disconnect_all(app.clone()) {
+                    emit_tray_action_error(&app, None, message);
+                }
+            });
+        }
+        TRAY_QUIT_ID => request_app_quit(app),
+        dynamic_id => {
+            let action = app
+                .state::<AppState>()
+                .tray_actions
+                .lock()
+                .ok()
+                .and_then(|actions| actions.get(dynamic_id).cloned());
+            if let Some(action) = action {
+                run_tray_profile_action(app.clone(), action);
+            }
+        }
+    }
+}
+
+fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    let status_item = MenuItem::new(app, "状态：VPN 未连接", false, None::<&str>)?;
+    let window_item =
+        MenuItem::with_id(app, TRAY_TOGGLE_WINDOW_ID, "打开管理器", true, None::<&str>)?;
+    let profiles_menu = Submenu::new(app, "VPN 配置", true)?;
+    let disconnect_all_item = MenuItem::with_id(
+        app,
+        TRAY_DISCONNECT_ALL_ID,
+        "断开全部连接",
+        false,
+        None::<&str>,
+    )?;
+    let quit_item = MenuItem::with_id(app, TRAY_QUIT_ID, "退出 OpenFortiVPN", true, None::<&str>)?;
+    let menu = Menu::new(app)?;
+    menu.append(&status_item)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&window_item)?;
+    menu.append(&profiles_menu)?;
+    menu.append(&disconnect_all_item)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&quit_item)?;
+
+    let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
+        .menu(&menu)
+        .tooltip("OpenFortiVPN Manager · VPN 未连接")
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| handle_tray_menu_event(app, event.id().as_ref()))
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::DoubleClick { .. } = event {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray_builder = tray_builder.icon(icon);
+    }
+    tray_builder.build(app)?;
+    if let Ok(mut tray_ui) = app.state::<AppState>().tray_ui.lock() {
+        *tray_ui = Some(TrayUi {
+            status_item,
+            window_item,
+            disconnect_all_item,
+            profiles_menu,
+        });
+    }
+    schedule_tray_refresh(app.handle());
+    Ok(())
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    request_app_quit(&app);
 }
 
 fn shutdown_connections(app: &AppHandle) -> Result<(), String> {
@@ -2779,19 +3546,23 @@ fn shutdown_connections(app: &AppHandle) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if !args.iter().any(|argument| argument == "--autostart") {
+                show_main_window(app);
             }
         }))
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            Some(vec!["--autostart"]),
         ))
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
         .setup(|app| {
+            let desktop_preferences =
+                load_desktop_preferences(app.handle()).unwrap_or_else(|message| {
+                    eprintln!("OpenFortiVPN desktop settings were reset: {message}");
+                    DesktopPreferences::default()
+                });
             let loaded_profiles = load_profiles(app.handle()).map_err(|message| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
@@ -2805,6 +3576,9 @@ pub fn run() {
             let stale_processes = load_stale_runtime_processes(app.handle()).unwrap_or_default();
 
             let state = app.state::<AppState>();
+            if let Ok(mut preferences) = state.desktop_preferences.lock() {
+                *preferences = desktop_preferences.clone();
+            }
             if let Ok(mut store) = state.store.lock() {
                 store.profiles = loaded_profiles.profiles;
                 store.stored_secret_profiles = loaded_profiles.stored_secret_profiles;
@@ -2814,6 +3588,7 @@ pub fn run() {
                     store.stale_processes = stale_processes;
                 }
             }
+            setup_tray(app)?;
             refresh_privilege_status(app.handle(), false);
             start_privilege_keepalive(app.handle().clone());
             load_startup_credentials(
@@ -2823,10 +3598,29 @@ pub fn run() {
                 startup_unknown_secret_profiles,
             );
             start_remote_access(app.handle().clone());
+
+            if app.autolaunch().is_enabled().unwrap_or(false) {
+                if let Err(error) = app
+                    .autolaunch()
+                    .disable()
+                    .and_then(|()| app.autolaunch().enable())
+                {
+                    eprintln!("OpenFortiVPN could not refresh its autostart entry: {error}");
+                }
+            }
+
+            let launched_from_autostart = env::args().any(|argument| argument == "--autostart");
+            if should_start_hidden(launched_from_autostart, desktop_preferences.start_minimized) {
+                hide_main_window(app.handle());
+            } else {
+                show_main_window(app.handle());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             list_profiles,
+            get_desktop_preferences,
+            update_desktop_preferences,
             save_profile,
             delete_profile,
             list_instances,
@@ -2836,6 +3630,9 @@ pub fn run() {
             unlock_privileges,
             start_profile,
             stop_instance,
+            reconnect_profile,
+            disconnect_all,
+            quit_app,
             export_profile_config,
             remote::remote_access_status,
             remote::configure_remote_access,
@@ -2845,12 +3642,46 @@ pub fn run() {
         .expect("error while building OpenFortiVPN Manager");
 
     app.run(|app, event| match event {
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == "main" => {
+            let state = app.state::<AppState>();
+            let shutting_down = state.shutting_down.load(Ordering::SeqCst);
+            let quit_requested = state.quit_requested.load(Ordering::SeqCst);
+            api.prevent_close();
+            if shutting_down || quit_requested {
+                return;
+            }
+            let preferences = state
+                .desktop_preferences
+                .lock()
+                .map(|preferences| preferences.clone())
+                .unwrap_or_default();
+            if should_hide_window_on_close(&preferences, quit_requested, shutting_down) {
+                hide_main_window(app);
+            } else {
+                hide_main_window(app);
+                request_app_quit(app);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } => {
+            if !has_visible_windows {
+                show_main_window(app);
+            }
+        }
         tauri::RunEvent::ExitRequested { api, code, .. } => {
             let state = app.state::<AppState>();
             if state.exit_cleanup_complete.load(Ordering::SeqCst) {
                 return;
             }
             api.prevent_exit();
+            state.quit_requested.store(true, Ordering::SeqCst);
             if state.shutting_down.swap(true, Ordering::SeqCst) {
                 return;
             }
@@ -2864,9 +3695,10 @@ pub fn run() {
                     app.exit(code.unwrap_or_default());
                 }
                 Err(message) => {
-                    app.state::<AppState>()
-                        .shutting_down
-                        .store(false, Ordering::SeqCst);
+                    let state = app.state::<AppState>();
+                    state.shutting_down.store(false, Ordering::SeqCst);
+                    state.quit_requested.store(false, Ordering::SeqCst);
+                    show_main_window(&app);
                     let _ = app.emit("vpn-exit-blocked", AppExitBlocked { message });
                 }
             });
@@ -3342,11 +4174,163 @@ mod tests {
     }
 
     #[test]
+    fn repeated_user_connect_reuses_the_running_instance() {
+        assert!(reuse_running_instance_for_start(StartOrigin::User));
+        assert!(!reuse_running_instance_for_start(StartOrigin::Startup));
+        assert!(!reuse_running_instance_for_start(
+            StartOrigin::AutoReconnect(7)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_vpn_credentials_are_private_and_round_trip() {
+        let directory =
+            env::temp_dir().join(format!("openfortivpn-credentials-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("credentials.json");
+        let credentials = BTreeMap::from([
+            ("profile-a".to_string(), "first secret".to_string()),
+            ("profile-b".to_string(), "second secret".to_string()),
+        ]);
+
+        persist_local_credentials_file(&path, &credentials).unwrap();
+
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(load_local_credentials_file(&path).unwrap(), credentials);
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_vpn_credentials_reject_insecure_permissions_and_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let directory =
+            env::temp_dir().join(format!("openfortivpn-credentials-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("credentials.json");
+        fs::write(&path, r#"{"profile-a":"first secret"}"#).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(load_local_credentials_file(&path).is_err());
+        assert!(persist_local_credentials_file(&path, &BTreeMap::new()).is_err());
+
+        fs::remove_file(&path).unwrap();
+        let target = directory.join("target.json");
+        fs::write(&target, r#"{"profile-a":"first secret"}"#).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&target, &path).unwrap();
+
+        assert!(load_local_credentials_file(&path).is_err());
+        assert!(persist_local_credentials_file(&path, &BTreeMap::new()).is_err());
+
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn profile_removal_clears_credentials_instances_and_retry_state() {
+        let profile = valid_profile();
+        let profile_id = profile.id.clone();
+        let mut store = RuntimeStore::default();
+        store.profiles.insert(profile_id.clone(), profile);
+        store
+            .secrets
+            .insert(profile_id.clone(), "session secret".to_string());
+        store.stored_secret_profiles.insert(profile_id.clone());
+        store.unknown_secret_profiles.insert(profile_id.clone());
+        store.reconnect_attempts.insert(profile_id.clone(), 3);
+        store.reconnect_generations.insert(profile_id.clone(), 8);
+        #[cfg(unix)]
+        let test_child = Command::new("/usr/bin/true").spawn().unwrap();
+        #[cfg(windows)]
+        let test_child = Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .spawn()
+            .unwrap();
+        store.instances.insert(
+            "instance-1".to_string(),
+            ManagedInstance {
+                view: InstanceView {
+                    id: "instance-1".to_string(),
+                    profile_generation: 8,
+                    profile_id: profile_id.clone(),
+                    profile_name: "Office".to_string(),
+                    adapter_name: "ofv-office".to_string(),
+                    status: "failed".to_string(),
+                    message: "failed".to_string(),
+                    pid: 0,
+                    started_at: 1,
+                    ended_at: Some(2),
+                    exit_code: Some(1),
+                    revision: 1,
+                },
+                child: Arc::new(Mutex::new(test_child)),
+                process_running: false,
+                user_requested_stop: false,
+                reconnect_blocked: true,
+                failure_message: Some("failed".to_string()),
+            },
+        );
+
+        remove_profile_runtime_state(&mut store, &profile_id);
+
+        assert!(!store.profiles.contains_key(&profile_id));
+        assert!(!store.secrets.contains_key(&profile_id));
+        assert!(!store.stored_secret_profiles.contains(&profile_id));
+        assert!(!store.unknown_secret_profiles.contains(&profile_id));
+        assert!(!store.reconnect_attempts.contains_key(&profile_id));
+        assert!(!store.reconnect_generations.contains_key(&profile_id));
+        assert!(store.instances.is_empty());
+    }
+
+    #[test]
     fn automatic_retry_excludes_manual_and_fatal_disconnects() {
         assert!(automatic_retry_allowed(false, false, true));
         assert!(!automatic_retry_allowed(true, false, true));
         assert!(!automatic_retry_allowed(false, true, true));
         assert!(!automatic_retry_allowed(false, false, false));
+    }
+
+    #[test]
+    fn desktop_preferences_default_to_background_residency() {
+        let preferences = DesktopPreferences::default();
+        assert!(preferences.close_to_tray);
+        assert!(preferences.start_minimized);
+        assert!(should_hide_window_on_close(&preferences, false, false));
+        assert!(!should_hide_window_on_close(&preferences, true, false));
+        assert!(!should_hide_window_on_close(&preferences, false, true));
+    }
+
+    #[test]
+    fn desktop_preferences_load_missing_fields_with_safe_defaults() {
+        let preferences: DesktopPreferences = serde_json::from_str("{}").unwrap();
+        assert_eq!(preferences, DesktopPreferences::default());
+
+        let preferences: DesktopPreferences =
+            serde_json::from_str(r#"{"closeToTray":false}"#).unwrap();
+        assert!(!preferences.close_to_tray);
+        assert!(preferences.start_minimized);
+    }
+
+    #[test]
+    fn startup_is_hidden_only_for_background_autostart() {
+        assert!(should_start_hidden(true, true));
+        assert!(!should_start_hidden(true, false));
+        assert!(!should_start_hidden(false, true));
+    }
+
+    #[test]
+    fn tray_status_summarizes_connection_lifecycle() {
+        assert_eq!(
+            tray_status_text(&["connected", "connecting", "failed"]),
+            "已连接 1 个 · 正在连接 1 个"
+        );
+        assert_eq!(tray_status_text(&["connecting"]), "正在连接 1 个 VPN");
+        assert_eq!(tray_status_text(&["failed"]), "VPN 未连接 · 最近连接失败");
+        assert_eq!(tray_status_text(&[]), "VPN 未连接");
     }
 
     #[test]
@@ -3360,6 +4344,30 @@ mod tests {
         let value = serde_json::to_value(view).expect("instance should serialize");
         assert_eq!(value["profileGeneration"], 2);
         assert_eq!(value["revision"], 0);
+    }
+
+    #[test]
+    fn automatic_reconnect_reuses_its_cancellation_generation() {
+        let mut store = RuntimeStore::default();
+        let generation = bump_reconnect_generation(&mut store, "profile-1");
+
+        assert_eq!(
+            reserve_start_generation(
+                &mut store,
+                "profile-1",
+                StartOrigin::AutoReconnect(generation),
+            ),
+            Ok(generation)
+        );
+        assert_eq!(
+            store.reconnect_generations.get("profile-1"),
+            Some(&generation)
+        );
+
+        assert_eq!(
+            reserve_start_generation(&mut store, "profile-1", StartOrigin::User),
+            Ok(generation + 1)
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "openfortivpn-manager"
-version = "0.1.2"
+version = "0.1.5"
 description = "Cross-platform profile and process manager for openfortivpn"
 authors = ["baozaodetudou"]
 edition = "2021"
@@ -21,7 +21,7 @@ tauri-build = { version = "2", features = [] }
 axum = "0.8.9"
 axum-server = { version = "0.8.0", features = ["tls-rustls-no-provider"] }
 base64 = "0.22.1"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
@@ -40,3 +40,6 @@ zeroize = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_System_Threading"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

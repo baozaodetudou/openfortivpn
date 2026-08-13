@@ -10,7 +10,7 @@ On Windows, it uses an in-process PPP engine with
 
 It is compatible with Fortinet VPNs.
 
-OpenFortiVPN Manager v0.1.2
+OpenFortiVPN Manager v0.1.5
 ---------------------------
 
 This repository also ships a complete graphical VPN manager for Linux, macOS
@@ -28,8 +28,10 @@ and Windows, plus a headless Linux service. Download the installers from the
 The first Linux/macOS connection asks once for the computer administrator
 password to install the restricted system helper. Normal connect, disconnect,
 reconnect, automatic reconnect and later application starts do not ask again.
-Each VPN profile has its own securely stored credential and at most one running
-instance; different profiles can connect concurrently.
+Each VPN profile has its own stored credential and at most one running instance;
+different profiles can connect concurrently. Concurrent VPNs should use
+non-overlapping split routes and should not both replace the default route or
+global DNS.
 
 See the [中文用户指南](docs/user-guide.zh-CN.md), [desktop reference](app/README.md),
 [Linux headless guide](headless/README.md), [architecture](docs/architecture.md)
@@ -85,10 +87,14 @@ the Tauri build.
 
 Profile settings are persisted in the operating system's application data
 directory. On Unix systems, the profile file is created with mode `0600`.
-Passwords are never written to that file. A user may instead save a password in
-macOS Keychain, Windows Credential Manager or Linux Secret Service; disabling
-that option keeps the password in memory for the current application session
-only.
+Passwords are never written to `profiles.json`. Windows uses Credential Manager
+and Linux uses Secret Service. Because the distributed macOS app is ad-hoc
+signed, it stores VPN passwords in a separate `credentials.json` owned by the
+current user, with its parent directory set to `0700` and the file to `0600`.
+This avoids repeated Keychain authorization prompts, but the file is not
+encrypted and remains readable by the logged-in user, root and same-user
+processes. Disabling password saving keeps it only in memory for the current
+application session.
 
 The manager can start when the user logs in on Linux, macOS and Windows. Each
 profile can also be marked to connect automatically after the application
@@ -108,9 +114,9 @@ manual disconnect never enters that retry path, and active profiles cannot be
 edited or deleted until their connection has stopped.
 
 The computer administrator password is separate from each profile's VPN
-password and is used only for the helper installation. VPN passwords continue
-to be stored per profile in the system credential store or held only for the
-current application session. An engine-only `NOPASSWD` rule is not enough to
+password and is used only for the helper installation. VPN passwords are stored
+per profile using the platform policy above or held only for the current
+application session. An engine-only `NOPASSWD` rule is not enough to
 safely manage the complete process lifecycle; do not compensate with
 unrestricted `kill`, arbitrary commands, shells or writable wrapper scripts. On Windows, the
 application instead requests UAC elevation once at startup and its child

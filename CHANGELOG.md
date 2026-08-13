@@ -14,6 +14,42 @@ Releases
 This high level changelog is usually updated when a release is tagged.
 On the master branch there may be changes that are not (yet) described here.
 
+### OpenFortiVPN Manager 0.1.5
+
+* [-] encode every non-ASCII VPN-password byte deterministically instead of
+  passing signed UTF-8 bytes to C character-classification functions
+* [~] route missing or rejected passwords through the proven full profile editor
+  and remove the separate password-only save-and-connect dialog
+* [-] allow deleting an active or reconnecting profile by first cancelling
+  retries and safely disconnecting its VPN process
+* [~] require one administrator-approved helper payload refresh after upgrading
+  to 0.1.5 because the bundled VPN engine changed
+
+### OpenFortiVPN Manager 0.1.4
+
+* [-] make repeated user connect requests idempotent while the same profile is
+  already starting or running, without blocking other profiles
+* [-] stop unsigned macOS builds from reading VPN passwords from Keychain and
+  repeatedly displaying authorization prompts; save them instead in a
+  per-user mode-`0600` credential file outside `profiles.json`
+* [+] reopen a focused one-time VPN-password prompt for profiles upgrading from
+  legacy Keychain storage, then reuse the saved password on later connections
+* [+] show when concurrently active profiles both manage routes or DNS and
+  explain the split-route requirement
+
+### OpenFortiVPN Manager 0.1.3
+
+* [+] keep the VPN control plane and automatic reconnect running after the main
+  window is closed
+* [+] add a persistent system-tray or menu-bar status menu with per-profile
+  connect, reconnect and disconnect actions
+* [+] add close-to-tray and hidden login-startup settings, plus explicit safe
+  disconnect-and-quit actions
+* [-] keep transient pre-launch failures inside the bounded automatic-reconnect
+  loop instead of cancelling after the first retry
+* [-] clean generated bundle output before packaging so local incremental builds
+  cannot retain a stale application executable
+
 ### OpenFortiVPN Manager 0.1.2
 
 * [-] avoid repeated administrator-password prompts by installing the restricted

@@ -106,3 +106,13 @@ export type RemoteAccessError = {
 export type AppExitBlocked = {
   message: string;
 };
+
+export type DesktopPreferences = {
+  closeToTray: boolean;
+  startMinimized: boolean;
+};
+
+export type TrayActionError = {
+  profileId: string | null;
+  message: string;
+};

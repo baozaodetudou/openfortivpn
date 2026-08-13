@@ -1,12 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OpenFortiVPN Manager",
-  "version": "0.1.2",
+  "version": "0.1.5",
   "identifier": "com.baozaodetudou.openfortivpn",
   "build": {
     "beforeDevCommand": "npm run desktop:dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run desktop:build",
+    "beforeBundleCommand": "node scripts/clean-bundle-output.mjs",
     "frontendDist": "../build"
   },
   "app": {
@@ -17,6 +18,7 @@
         "height": 780,
         "minWidth": 920,
         "minHeight": 640,
+        "visible": false,
         "center": true
       }
     ],
