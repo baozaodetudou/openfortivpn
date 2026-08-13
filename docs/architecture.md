@@ -70,7 +70,10 @@ port-forwarding is not a supported production deployment.
 
 VPN passwords are either session-only or stored in macOS Keychain, Windows
 Credential Manager or Linux Secret Service. They are never written to the
-profile JSON or returned by the remote API.
+profile JSON or returned by the remote API. Profile JSON persists only the
+non-secret fact that a credential is expected to exist. Stored credentials are
+resolved on demand (or for startup auto-connect), so normal startup does not
+prompt once per saved profile.
 
 Unix installs a narrow helper and matching engine into fixed, root-owned paths.
 Its sudoers rule permits only that helper. The helper validates an allowlist of

@@ -10,6 +10,11 @@ active. Concurrent profiles should use non-overlapping split routes. Two VPNs
 that both replace the default route or global DNS may conflict at the operating
 system level and are not advertised as a safe configuration.
 
+The desktop settings panel provides native WebView zoom from 80% to 150%,
+system/light/dark appearance modes, selectable accent colors and keyboard zoom
+shortcuts. These non-sensitive UI preferences are stored locally in the WebView
+and do not enter profile configuration or credential storage.
+
 ## Development
 
 ```shell
@@ -43,12 +48,17 @@ packages and browser surfaces use one consistent product identity.
 
 Ordinary profile fields are persisted in the operating system's application
 data directory. On Unix systems, the profile file is created with mode `0600`.
-Passwords are never written to `profiles.json`.
+Passwords are never written to `profiles.json`; the file stores only a
+`passwordStored` boolean so credential availability remains stable while the
+operating-system credential store is loaded on demand.
 
 The **Save password in system credential store** option stores a password in
 macOS Keychain, Windows Credential Manager or Linux Secret Service. It can be
 disabled for any profile; in that case the password is held in memory and is
-available only for the current application session.
+available only for the current application session. New profiles enable secure
+password storage by default. If a session-only password is missing, **Connect**
+opens a focused credential dialog instead of sending the user back through the
+complete profile editor.
 
 ## Startup and automatic connection
 
@@ -107,10 +117,10 @@ Secret Service when **Save password in system credential store** is enabled, or
 held in memory for only the current application session when it is disabled.
 The administrator password is used solely for the one-time helper installation.
 
-Stored VPN passwords are loaded on a background worker after the application
-window is created. The UI therefore remains responsive when macOS Keychain or
-Linux Secret Service requires a local user approval, and profile credential
-status is refreshed as soon as loading completes.
+Stored VPN passwords are loaded only for startup auto-connect or when a profile
+is connected. Ordinary application startup therefore does not enumerate and
+unlock every profile credential. Profiles created by older versions are checked
+once and migrated to the explicit `passwordStored` metadata.
 
 If policy does not allow the manager to receive an administrator password, an
 administrator can deploy the packaged helper through the organization's normal

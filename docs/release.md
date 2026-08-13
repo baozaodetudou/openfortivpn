@@ -59,8 +59,12 @@ only after all signing and notarization secrets below have been configured.
 
 Before tagging, update the version in `app/src-tauri/tauri.conf.json`,
 `app/src-tauri/Cargo.toml` and `headless/Cargo.toml`; the release workflow derives
-the Debian metadata and artifact names from the headless crate version. Review
-release notes and run the local checks. Create
+the Debian metadata and artifact names from the headless crate version. Do not
+bump `app/src-tauri/helper/Cargo.toml` merely to match the application version:
+changing the helper binary makes an otherwise unnecessary administrator-approved
+helper update mandatory. Change the helper crate version only when its code,
+dependencies or privileged protocol actually changes. Review release notes and
+run the local checks. Create
 an annotated tag only from the reviewed commit:
 
 ```shell

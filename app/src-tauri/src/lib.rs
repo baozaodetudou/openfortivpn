@@ -9,7 +9,7 @@ use std::fs;
 use std::io::Write;
 use std::io::{BufRead, BufReader, Read};
 #[cfg(unix)]
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 #[cfg(windows)]
@@ -100,6 +100,22 @@ struct ManagedInstance {
     failure_message: Option<String>,
 }
 
+#[derive(Default)]
+struct LoadedProfiles {
+    profiles: BTreeMap<String, VpnProfile>,
+    stored_secret_profiles: HashSet<String>,
+    unknown_secret_profiles: HashSet<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedVpnProfile {
+    #[serde(flatten)]
+    profile: VpnProfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    password_stored: Option<bool>,
+}
+
 #[cfg(unix)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,6 +133,7 @@ struct RuntimeStore {
     profiles: BTreeMap<String, VpnProfile>,
     secrets: HashMap<String, String>,
     stored_secret_profiles: HashSet<String>,
+    unknown_secret_profiles: HashSet<String>,
     instances: BTreeMap<String, ManagedInstance>,
     starting_profiles: HashSet<String>,
     mutating_profiles: HashSet<String>,
@@ -188,6 +205,7 @@ struct PrivilegeStatus {
 const KEYRING_SERVICE: &str = "com.baozaodetudou.openfortivpn";
 const MAX_RETAINED_LOGS: usize = 2_000;
 const REMOTE_TOKEN_PROFILE_ID: &str = "__remote_access_token";
+const ENGINE_PASSWORD_MAX_BYTES: usize = 256;
 static CREDENTIAL_ACCESS: Mutex<()> = Mutex::new(());
 
 fn now_epoch() -> u64 {
@@ -219,30 +237,88 @@ fn profiles_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir(app)?.join("profiles.json"))
 }
 
-fn load_profiles(app: &AppHandle) -> Result<BTreeMap<String, VpnProfile>, String> {
+fn parse_profile_file(contents: &str) -> Result<LoadedProfiles, String> {
+    let values: Vec<PersistedVpnProfile> =
+        serde_json::from_str(contents).map_err(|error| format!("配置列表格式错误：{error}"))?;
+    let mut loaded = LoadedProfiles::default();
+    for value in values {
+        let profile_id = value.profile.id.clone();
+        match value.password_stored {
+            Some(true) => {
+                loaded.stored_secret_profiles.insert(profile_id.clone());
+            }
+            Some(false) => {}
+            None => {
+                loaded.unknown_secret_profiles.insert(profile_id.clone());
+            }
+        }
+        loaded.profiles.insert(profile_id, value.profile);
+    }
+    Ok(loaded)
+}
+
+fn serialize_profile_file(
+    profiles: &BTreeMap<String, VpnProfile>,
+    stored_secret_profiles: &HashSet<String>,
+    unknown_secret_profiles: &HashSet<String>,
+) -> Result<String, String> {
+    let values = profiles
+        .values()
+        .cloned()
+        .map(|profile| PersistedVpnProfile {
+            password_stored: if unknown_secret_profiles.contains(&profile.id) {
+                None
+            } else {
+                Some(stored_secret_profiles.contains(&profile.id))
+            },
+            profile,
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string_pretty(&values).map_err(|error| format!("无法序列化配置列表：{error}"))
+}
+
+fn load_profiles(app: &AppHandle) -> Result<LoadedProfiles, String> {
     let path = profiles_path(app)?;
     if !path.exists() {
-        return Ok(BTreeMap::new());
+        return Ok(LoadedProfiles::default());
     }
 
     let contents = fs::read_to_string(&path)
         .map_err(|error| format!("无法读取配置列表 {}：{error}", path.display()))?;
-    let profiles: Vec<VpnProfile> =
-        serde_json::from_str(&contents).map_err(|error| format!("配置列表格式错误：{error}"))?;
-    Ok(profiles
-        .into_iter()
-        .map(|profile| (profile.id.clone(), profile))
-        .collect())
+    parse_profile_file(&contents)
 }
 
 fn persist_profiles(
     app: &AppHandle,
     profiles: &BTreeMap<String, VpnProfile>,
+    stored_secret_profiles: &HashSet<String>,
+    unknown_secret_profiles: &HashSet<String>,
 ) -> Result<(), String> {
     let path = profiles_path(app)?;
-    let values: Vec<&VpnProfile> = profiles.values().collect();
-    let contents = serde_json::to_string_pretty(&values)
-        .map_err(|error| format!("无法序列化配置列表：{error}"))?;
+    let contents =
+        serialize_profile_file(profiles, stored_secret_profiles, unknown_secret_profiles)?;
+    #[cfg(unix)]
+    {
+        let temporary = path.with_file_name(format!(".profiles.{}.tmp", Uuid::new_v4()));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|error| format!("无法创建临时配置列表：{error}"))?;
+        if let Err(error) = file
+            .write_all(contents.as_bytes())
+            .and_then(|()| file.sync_all())
+        {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("无法保存临时配置列表：{error}"));
+        }
+        if let Err(error) = fs::rename(&temporary, &path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(format!("无法保存配置列表 {}：{error}", path.display()));
+        }
+    }
+    #[cfg(not(unix))]
     fs::write(&path, contents)
         .map_err(|error| format!("无法保存配置列表 {}：{error}", path.display()))?;
 
@@ -293,6 +369,38 @@ fn validate_line_value(label: &str, value: &str) -> Result<(), String> {
         return Err(format!("{label} 不能包含换行符"));
     }
     Ok(())
+}
+
+fn validate_password(password: &str) -> Result<(), String> {
+    validate_line_value("密码", password)?;
+    if password.contains('\0') {
+        return Err("VPN 密码不能包含 NUL 字符".to_string());
+    }
+    if password.len() > ENGINE_PASSWORD_MAX_BYTES {
+        return Err(format!("VPN 密码不能超过 {ENGINE_PASSWORD_MAX_BYTES} 字节"));
+    }
+    if password
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_whitespace)
+        || password
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_whitespace)
+    {
+        return Err("VPN 密码不能以空白字符开头或结尾".to_string());
+    }
+    Ok(())
+}
+
+fn read_usable_stored_password(profile_id: &str) -> Result<Option<String>, String> {
+    read_stored_password(profile_id)?
+        .map(|password| {
+            validate_password(&password)
+                .map_err(|message| format!("系统凭据库中的 VPN 密码无法使用：{message}"))?;
+            Ok(password)
+        })
+        .transpose()
 }
 
 fn validate_profile(profile: &VpnProfile) -> Result<(), String> {
@@ -539,7 +647,7 @@ fn render_runtime_config(
     password: &str,
     adapter_name: &str,
 ) -> Result<String, String> {
-    validate_line_value("密码", password)?;
+    validate_password(password)?;
 
     let mut config = String::from("# Generated by OpenFortiVPN Manager. Do not edit.\n");
     push_config_line(&mut config, "host", profile.host.trim());
@@ -591,12 +699,22 @@ fn write_runtime_config(
     let directory = runtime_directory(app)?;
     let path = directory.join(format!("{instance_id}.conf"));
     let config = render_runtime_config(profile, password, adapter_name)?;
+    #[cfg(unix)]
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|error| format!("无法创建临时配置 {}：{error}", path.display()))?;
+        if let Err(error) = file.write_all(config.as_bytes()) {
+            let _ = fs::remove_file(&path);
+            return Err(format!("无法写入临时配置 {}：{error}", path.display()));
+        }
+    }
+    #[cfg(not(unix))]
     fs::write(&path, config)
         .map_err(|error| format!("无法写入临时配置 {}：{error}", path.display()))?;
-
-    #[cfg(unix)]
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-        .map_err(|error| format!("无法设置临时配置权限：{error}"))?;
 
     Ok(path)
 }
@@ -1369,10 +1487,11 @@ fn list_profiles(state: State<'_, AppState>) -> Result<Vec<ProfileView>, String>
         .profiles
         .values()
         .map(|profile| {
+            let password_stored = store.stored_secret_profiles.contains(&profile.id);
             profile_view(
                 profile,
-                store.secrets.contains_key(&profile.id),
-                store.stored_secret_profiles.contains(&profile.id),
+                store.secrets.contains_key(&profile.id) || password_stored,
+                password_stored,
             )
         })
         .collect())
@@ -1411,7 +1530,7 @@ fn save_profile(app: AppHandle, mut input: SaveProfileInput) -> Result<ProfileVi
 
     let password = input.password.filter(|password| !password.is_empty());
     if let Some(password) = password.as_deref() {
-        validate_line_value("密码", password)?;
+        validate_password(password)?;
     }
 
     if input.profile.auto_connect && !input.remember_password {
@@ -1421,10 +1540,13 @@ fn save_profile(app: AppHandle, mut input: SaveProfileInput) -> Result<ProfileVi
     let profile_id = input.profile.id.clone();
     reserve_profile_mutation(&app, &profile_id)?;
     let result = (|| -> Result<ProfileView, String> {
-        let was_stored = {
+        let (was_stored, was_unknown) = {
             let state = app.state::<AppState>();
             let store = lock_store(&state)?;
-            store.stored_secret_profiles.contains(&profile_id)
+            (
+                store.stored_secret_profiles.contains(&profile_id),
+                store.unknown_secret_profiles.contains(&profile_id),
+            )
         };
 
         let mut password_from_keyring = None;
@@ -1434,33 +1556,44 @@ fn save_profile(app: AppHandle, mut input: SaveProfileInput) -> Result<ProfileVi
             } else if was_stored {
                 // An empty password while editing means keep the existing credential.
             } else {
-                password_from_keyring = read_stored_password(&profile_id)?;
+                password_from_keyring = read_usable_stored_password(&profile_id)?;
                 if password_from_keyring.is_none() {
                     return Err("请先输入密码，再保存到系统凭据库".to_string());
                 }
             }
-        } else if was_stored {
+        } else if was_stored || was_unknown {
             delete_stored_password(&profile_id)?;
         }
 
         let view = {
             let state = app.state::<AppState>();
             let mut store = lock_store(&state)?;
-            if let Some(password) = password.or(password_from_keyring) {
+            let password = password.or(password_from_keyring);
+            let mut profiles = store.profiles.clone();
+            let mut stored_secret_profiles = store.stored_secret_profiles.clone();
+            let mut unknown_secret_profiles = store.unknown_secret_profiles.clone();
+            if input.remember_password {
+                stored_secret_profiles.insert(profile_id.clone());
+            } else {
+                stored_secret_profiles.remove(&profile_id);
+            }
+            unknown_secret_profiles.remove(&profile_id);
+            profiles.insert(profile_id.clone(), input.profile.clone());
+            persist_profiles(
+                &app,
+                &profiles,
+                &stored_secret_profiles,
+                &unknown_secret_profiles,
+            )?;
+            store.profiles = profiles;
+            store.stored_secret_profiles = stored_secret_profiles;
+            store.unknown_secret_profiles = unknown_secret_profiles;
+            if let Some(password) = password {
                 store.secrets.insert(profile_id.clone(), password);
             }
-            if input.remember_password {
-                store.stored_secret_profiles.insert(profile_id.clone());
-            } else {
-                store.stored_secret_profiles.remove(&profile_id);
-            }
-            store
-                .profiles
-                .insert(profile_id.clone(), input.profile.clone());
-            persist_profiles(&app, &store.profiles)?;
             profile_view(
                 &input.profile,
-                store.secrets.contains_key(&profile_id),
+                store.secrets.contains_key(&profile_id) || input.remember_password,
                 store.stored_secret_profiles.contains(&profile_id),
             )
         };
@@ -1483,6 +1616,7 @@ fn delete_profile(app: AppHandle, profile_id: String) -> Result<(), String> {
                 return Err("找不到指定配置".to_string());
             }
             store.stored_secret_profiles.contains(&profile_id)
+                || store.unknown_secret_profiles.contains(&profile_id)
         };
 
         if was_stored {
@@ -1494,12 +1628,18 @@ fn delete_profile(app: AppHandle, profile_id: String) -> Result<(), String> {
         store.profiles.remove(&profile_id);
         store.secrets.remove(&profile_id);
         store.stored_secret_profiles.remove(&profile_id);
+        store.unknown_secret_profiles.remove(&profile_id);
         store.reconnect_attempts.remove(&profile_id);
         store.reconnect_generations.remove(&profile_id);
         store
             .instances
             .retain(|_, instance| instance.view.profile_id != profile_id);
-        persist_profiles(&app, &store.profiles)?;
+        persist_profiles(
+            &app,
+            &store.profiles,
+            &store.stored_secret_profiles,
+            &store.unknown_secret_profiles,
+        )?;
         drop(store);
         publish_privilege_status(&app);
         Ok(())
@@ -1804,7 +1944,7 @@ fn spawn_profile_process(
     if profile.use_sudo {
         if !sudo_engine_ready(&app) {
             set_privilege_ready(&app, false, true);
-            return Err("系统 VPN helper 尚未安装，请先完成一次安装".to_string());
+            return Err("系统 VPN helper 尚未安装或与当前版本不匹配，请在桌面端手动连接一次以完成安装或更新".to_string());
         }
         set_privilege_ready(&app, true, true);
     }
@@ -1982,6 +2122,75 @@ fn spawn_profile_process(
     Ok(view)
 }
 
+fn emit_profiles_changed(app: &AppHandle) {
+    if let Ok(profiles) = list_profiles(app.state()) {
+        let _ = app.emit("vpn-profiles-changed", profiles);
+    }
+}
+
+fn clear_missing_stored_password(app: &AppHandle, profile_id: &str) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let mut store = state
+        .store
+        .lock()
+        .map_err(|_| "内部运行状态已损坏".to_string())?;
+    if !store.stored_secret_profiles.contains(profile_id) {
+        return Ok(());
+    }
+    let mut stored_secret_profiles = store.stored_secret_profiles.clone();
+    let mut unknown_secret_profiles = store.unknown_secret_profiles.clone();
+    stored_secret_profiles.remove(profile_id);
+    unknown_secret_profiles.remove(profile_id);
+    persist_profiles(
+        app,
+        &store.profiles,
+        &stored_secret_profiles,
+        &unknown_secret_profiles,
+    )?;
+    store.stored_secret_profiles = stored_secret_profiles;
+    store.unknown_secret_profiles = unknown_secret_profiles;
+    store.secrets.remove(profile_id);
+    drop(store);
+    emit_profiles_changed(app);
+    Ok(())
+}
+
+fn resolve_profile_password(
+    app: &AppHandle,
+    profile_id: &str,
+    session_password: Option<String>,
+    password_stored: bool,
+) -> Result<String, String> {
+    if let Some(password) = session_password {
+        return Ok(password);
+    }
+    if !password_stored {
+        return Err("当前没有可用的 VPN 密码，请输入密码后再连接".to_string());
+    }
+
+    let password = match read_usable_stored_password(profile_id)? {
+        Some(password) => password,
+        None => {
+            clear_missing_stored_password(app, profile_id)?;
+            return Err("系统凭据库中的 VPN 密码已不存在，请重新输入并保存".to_string());
+        }
+    };
+    let state = app.state::<AppState>();
+    let mut store = state
+        .store
+        .lock()
+        .map_err(|_| "内部运行状态已损坏".to_string())?;
+    if !store.profiles.contains_key(profile_id)
+        || !store.stored_secret_profiles.contains(profile_id)
+    {
+        return Err("VPN 配置或已保存密码在连接期间发生了变化，请重试".to_string());
+    }
+    store
+        .secrets
+        .insert(profile_id.to_string(), password.clone());
+    Ok(password)
+}
+
 fn start_profile_impl(
     app: AppHandle,
     profile_id: String,
@@ -1990,7 +2199,7 @@ fn start_profile_impl(
     if app.state::<AppState>().shutting_down.load(Ordering::SeqCst) {
         return Err("应用正在退出，不能启动新的连接".to_string());
     }
-    let (profile, password, profile_generation) = {
+    let (profile, session_password, password_stored, profile_generation) = {
         let state = app.state::<AppState>();
         let mut store = state
             .store
@@ -2017,11 +2226,8 @@ fn start_profile_impl(
             .get(&profile_id)
             .cloned()
             .ok_or_else(|| "找不到指定配置".to_string())?;
-        let password = store
-            .secrets
-            .get(&profile_id)
-            .cloned()
-            .ok_or_else(|| "密码未保存在当前会话，请编辑配置并重新输入密码".to_string())?;
+        let session_password = store.secrets.get(&profile_id).cloned();
+        let password_stored = store.stored_secret_profiles.contains(&profile_id);
         let profile_generation = match origin {
             StartOrigin::AutoReconnect(expected) => {
                 let current = store
@@ -2039,10 +2245,18 @@ fn start_profile_impl(
             }
         };
         store.starting_profiles.insert(profile_id.clone());
-        (profile, password, profile_generation)
+        (
+            profile,
+            session_password,
+            password_stored,
+            profile_generation,
+        )
     };
 
-    let result = spawn_profile_process(app.clone(), profile, password, profile_generation);
+    let result = resolve_profile_password(&app, &profile_id, session_password, password_stored)
+        .and_then(|password| {
+            spawn_profile_process(app.clone(), profile, password, profile_generation)
+        });
     if let Ok(mut store) = app.state::<AppState>().store.lock() {
         store.starting_profiles.remove(&profile_id);
     }
@@ -2350,6 +2564,15 @@ fn start_auto_connect_profiles(app: AppHandle, credential_errors: Vec<AutoConnec
                     .privilege_ready
                     .load(Ordering::SeqCst)
             {
+                let _ = app.emit(
+                    "vpn-autoconnect-error",
+                    AutoConnectError {
+                        profile_id: profile_id.clone(),
+                        profile_name: profile_name.clone(),
+                        message: "系统 VPN Helper 尚未安装；请在桌面点击一次连接完成安装"
+                            .to_string(),
+                    },
+                );
                 waiting_for_privilege.push((profile_id, profile_name));
             } else {
                 attempt_auto_connect(&app, profile_id, profile_name);
@@ -2358,6 +2581,9 @@ fn start_auto_connect_profiles(app: AppHandle, credential_errors: Vec<AutoConnec
 
         while !waiting_for_privilege.is_empty() {
             thread::sleep(Duration::from_millis(250));
+            if app.state::<AppState>().shutting_down.load(Ordering::SeqCst) {
+                return;
+            }
             if !app
                 .state::<AppState>()
                 .privilege_ready
@@ -2373,44 +2599,106 @@ fn start_auto_connect_profiles(app: AppHandle, credential_errors: Vec<AutoConnec
     });
 }
 
-fn load_startup_credentials(app: AppHandle, profiles: BTreeMap<String, VpnProfile>) {
+fn startup_credential_result_is_current(
+    store: &RuntimeStore,
+    profile: &VpnProfile,
+    was_unknown: bool,
+    was_stored: bool,
+) -> bool {
+    store.profiles.get(&profile.id) == Some(profile)
+        && if was_unknown {
+            store.unknown_secret_profiles.contains(&profile.id)
+        } else {
+            was_stored && store.stored_secret_profiles.contains(&profile.id)
+        }
+}
+
+fn load_startup_credentials(
+    app: AppHandle,
+    profiles: BTreeMap<String, VpnProfile>,
+    stored_secret_profiles: HashSet<String>,
+    unknown_secret_profiles: HashSet<String>,
+) {
     thread::spawn(move || {
-        let results = profiles
-            .values()
-            .cloned()
-            .map(|profile| {
-                let result = read_stored_password(&profile.id);
-                (profile, result)
-            })
-            .collect::<Vec<_>>();
         let mut credential_errors = Vec::new();
+        let mut results = Vec::new();
+        for profile in profiles.values().cloned() {
+            let was_unknown = unknown_secret_profiles.contains(&profile.id);
+            let was_stored = stored_secret_profiles.contains(&profile.id);
+            if was_unknown || (profile.auto_connect && was_stored) {
+                results.push((
+                    profile.clone(),
+                    was_unknown,
+                    read_usable_stored_password(&profile.id),
+                ));
+            } else if profile.auto_connect && !was_stored {
+                credential_errors.push(AutoConnectError {
+                    profile_id: profile.id,
+                    profile_name: profile.name,
+                    message: "自动连接需要先保存 VPN 密码".to_string(),
+                });
+            }
+        }
 
         if let Ok(mut store) = app.state::<AppState>().store.lock() {
-            for (profile, result) in results {
-                if store.profiles.get(&profile.id) != Some(&profile) {
+            let mut metadata_changed = false;
+            for (profile, was_unknown, result) in results {
+                let was_stored = stored_secret_profiles.contains(&profile.id);
+                if !startup_credential_result_is_current(&store, &profile, was_unknown, was_stored)
+                {
                     continue;
                 }
                 match result {
                     Ok(Some(password)) => {
                         store.secrets.insert(profile.id.clone(), password);
-                        store.stored_secret_profiles.insert(profile.id.clone());
+                        metadata_changed |= store.stored_secret_profiles.insert(profile.id.clone());
+                        metadata_changed |= store.unknown_secret_profiles.remove(&profile.id);
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        metadata_changed |= store.stored_secret_profiles.remove(&profile.id);
+                        metadata_changed |= store.unknown_secret_profiles.remove(&profile.id);
+                        if profile.auto_connect {
+                            credential_errors.push(AutoConnectError {
+                                profile_id: profile.id,
+                                profile_name: profile.name,
+                                message: "系统凭据库中的 VPN 密码已不存在，请重新输入并保存"
+                                    .to_string(),
+                            });
+                        }
+                    }
                     Err(message) if profile.auto_connect => {
+                        if was_unknown {
+                            metadata_changed |=
+                                store.stored_secret_profiles.insert(profile.id.clone());
+                            metadata_changed |= store.unknown_secret_profiles.remove(&profile.id);
+                        }
                         credential_errors.push(AutoConnectError {
                             profile_id: profile.id,
                             profile_name: profile.name,
                             message,
                         });
                     }
+                    Err(_) if was_unknown => {
+                        // A legacy profile may have a keychain item that currently requires
+                        // user approval. Record the secure-storage intent so future launches
+                        // do not prompt for every profile; connection retries it on demand.
+                        metadata_changed |= store.stored_secret_profiles.insert(profile.id.clone());
+                        metadata_changed |= store.unknown_secret_profiles.remove(&profile.id);
+                    }
                     Err(_) => {}
                 }
             }
+            if metadata_changed {
+                let _ = persist_profiles(
+                    &app,
+                    &store.profiles,
+                    &store.stored_secret_profiles,
+                    &store.unknown_secret_profiles,
+                );
+            }
         }
 
-        if let Ok(profiles) = list_profiles(app.state()) {
-            let _ = app.emit("vpn-profiles-changed", profiles);
-        }
+        emit_profiles_changed(&app);
         start_auto_connect_profiles(app, credential_errors);
     });
 }
@@ -2504,13 +2792,23 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
         .setup(|app| {
-            let profiles = load_profiles(app.handle()).unwrap_or_default();
+            let loaded_profiles = load_profiles(app.handle()).map_err(|message| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("拒绝忽略损坏的 VPN 配置：{message}"),
+                )
+            })?;
+            let startup_profiles = loaded_profiles.profiles.clone();
+            let startup_stored_secret_profiles = loaded_profiles.stored_secret_profiles.clone();
+            let startup_unknown_secret_profiles = loaded_profiles.unknown_secret_profiles.clone();
             #[cfg(unix)]
             let stale_processes = load_stale_runtime_processes(app.handle()).unwrap_or_default();
 
             let state = app.state::<AppState>();
             if let Ok(mut store) = state.store.lock() {
-                store.profiles = profiles.clone();
+                store.profiles = loaded_profiles.profiles;
+                store.stored_secret_profiles = loaded_profiles.stored_secret_profiles;
+                store.unknown_secret_profiles = loaded_profiles.unknown_secret_profiles;
                 #[cfg(unix)]
                 {
                     store.stale_processes = stale_processes;
@@ -2518,7 +2816,12 @@ pub fn run() {
             }
             refresh_privilege_status(app.handle(), false);
             start_privilege_keepalive(app.handle().clone());
-            load_startup_credentials(app.handle().clone(), profiles);
+            load_startup_credentials(
+                app.handle().clone(),
+                startup_profiles,
+                startup_stored_secret_profiles,
+                startup_unknown_secret_profiles,
+            );
             start_remote_access(app.handle().clone());
             Ok(())
         })
@@ -2654,6 +2957,75 @@ mod tests {
 
         assert!(!profile.auto_connect);
         assert!(profile.auto_reconnect);
+    }
+
+    #[test]
+    fn profile_file_persists_credential_metadata_without_the_password() {
+        let profile = valid_profile();
+        let profiles = BTreeMap::from([(profile.id.clone(), profile.clone())]);
+        let stored = HashSet::from([profile.id.clone()]);
+
+        let contents = serialize_profile_file(&profiles, &stored, &HashSet::new())
+            .expect("profile metadata should serialize");
+
+        assert!(contents.contains("\"passwordStored\": true"));
+        assert!(!contents.contains("secret"));
+
+        let loaded = parse_profile_file(&contents).expect("profile metadata should load");
+        assert_eq!(loaded.profiles.get(&profile.id), Some(&profile));
+        assert!(loaded.stored_secret_profiles.contains(&profile.id));
+        assert!(!loaded.unknown_secret_profiles.contains(&profile.id));
+    }
+
+    #[test]
+    fn legacy_profile_file_marks_credential_state_for_one_time_migration() {
+        let profile = valid_profile();
+        let contents = serde_json::to_string(&vec![profile.clone()]).unwrap();
+
+        let loaded = parse_profile_file(&contents).expect("legacy profiles should load");
+
+        assert!(!loaded.stored_secret_profiles.contains(&profile.id));
+        assert!(loaded.unknown_secret_profiles.contains(&profile.id));
+    }
+
+    #[test]
+    fn explicit_missing_credential_is_not_rechecked_on_every_startup() {
+        let profile = valid_profile();
+        let profiles = BTreeMap::from([(profile.id.clone(), profile.clone())]);
+        let contents = serialize_profile_file(&profiles, &HashSet::new(), &HashSet::new())
+            .expect("profile metadata should serialize");
+
+        let loaded = parse_profile_file(&contents).expect("profile metadata should load");
+
+        assert!(!loaded.stored_secret_profiles.contains(&profile.id));
+        assert!(!loaded.unknown_secret_profiles.contains(&profile.id));
+    }
+
+    #[test]
+    fn stale_startup_credential_reads_cannot_undo_a_user_change() {
+        let profile = valid_profile();
+        let mut store = RuntimeStore::default();
+        store.profiles.insert(profile.id.clone(), profile.clone());
+        store.unknown_secret_profiles.insert(profile.id.clone());
+
+        assert!(startup_credential_result_is_current(
+            &store, &profile, true, false
+        ));
+
+        store.unknown_secret_profiles.remove(&profile.id);
+        assert!(!startup_credential_result_is_current(
+            &store, &profile, true, false
+        ));
+
+        store.stored_secret_profiles.insert(profile.id.clone());
+        assert!(startup_credential_result_is_current(
+            &store, &profile, false, true
+        ));
+
+        store.stored_secret_profiles.remove(&profile.id);
+        assert!(!startup_credential_result_is_current(
+            &store, &profile, false, true
+        ));
     }
 
     #[test]
@@ -2801,6 +3173,27 @@ mod tests {
         .expect_err("password line breaks must be rejected");
 
         assert_eq!(error, "密码 不能包含换行符");
+    }
+
+    #[test]
+    fn rejects_passwords_the_engine_would_silently_change_or_truncate() {
+        assert_eq!(
+            validate_password(" secret"),
+            Err("VPN 密码不能以空白字符开头或结尾".to_string())
+        );
+        assert_eq!(
+            validate_password("secret "),
+            Err("VPN 密码不能以空白字符开头或结尾".to_string())
+        );
+        assert_eq!(
+            validate_password("sec\0ret"),
+            Err("VPN 密码不能包含 NUL 字符".to_string())
+        );
+        assert_eq!(
+            validate_password(&"x".repeat(ENGINE_PASSWORD_MAX_BYTES + 1)),
+            Err(format!("VPN 密码不能超过 {ENGINE_PASSWORD_MAX_BYTES} 字节"))
+        );
+        assert_eq!(validate_password("correct horse battery staple"), Ok(()));
     }
 
     #[test]
