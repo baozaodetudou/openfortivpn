@@ -54,6 +54,7 @@ static char *uri_escape(const char *string)
 			escaped = tmp;
 		}
 		unsigned char byte = (unsigned char)*string;
+
 		if ((byte >= 'A' && byte <= 'Z') ||
 		    (byte >= 'a' && byte <= 'z') ||
 		    (byte >= '0' && byte <= '9') || byte == '-' ||

@@ -30,7 +30,7 @@ int main(void)
 
 	failures += assert_encoded("safe-Az09_~.", "safe-Az09_~.");
 	failures += assert_encoded("space and+percent%", "space%20and%2Bpercent%25");
-	failures += assert_encoded("A\xE4\xB8\xAD" "B", "A%E4%B8%ADB");
+	failures += assert_encoded("A\344\270\255B", "A%E4%B8%ADB");
 
 	return failures == 0 ? 0 : 1;
 }
