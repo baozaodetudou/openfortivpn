@@ -1944,7 +1944,7 @@ fn spawn_profile_process(
     if profile.use_sudo {
         if !sudo_engine_ready(&app) {
             set_privilege_ready(&app, false, true);
-            return Err("系统 VPN helper 尚未安装，请先完成一次安装".to_string());
+            return Err("系统 VPN helper 尚未安装或与当前版本不匹配，请在桌面端手动连接一次以完成安装或更新".to_string());
         }
         set_privilege_ready(&app, true, true);
     }

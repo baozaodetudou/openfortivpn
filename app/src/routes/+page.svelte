@@ -1192,12 +1192,12 @@
       <form onsubmit={unlockPrivileges}>
         <div class="privilege-icon" aria-hidden="true">◆</div>
         <div class="privilege-heading">
-          <small>仅首次安装</small>
-          <h2 id="privilege-title">安装系统 VPN Helper</h2>
+          <small>首次安装或必要更新</small>
+          <h2 id="privilege-title">安装或更新系统 VPN Helper</h2>
         </div>
 
         <p id="privilege-description" class="privilege-description">
-          OpenFortiVPN 需要管理员权限来创建网络接口、路由和 DNS 设置。首次安装受限系统 helper 需要输入一次<b>电脑管理员密码</b>，这不是 VPN 账号的密码。
+          OpenFortiVPN 需要管理员权限来创建网络接口、路由和 DNS 设置。首次安装或 helper 确实发生安全更新时需要输入一次<b>电脑管理员密码</b>，这不是 VPN 账号的密码。
         </p>
 
         <label class="privilege-password">
