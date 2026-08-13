@@ -496,7 +496,11 @@ jobs:
               "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $assetName
             }
           if (-not $lines) { throw "No Windows installers were produced" }
-          $lines | Set-Content -Encoding utf8 $checksumFile
+          [System.IO.File]::WriteAllText(
+            $checksumFile,
+            (($lines -join "`n") + "`n"),
+            [System.Text.UTF8Encoding]::new($false)
+          )
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v6
