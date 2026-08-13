@@ -1,6 +1,6 @@
 [package]
 name = "openfortivpn-manager"
-version = "0.1.5"
+version = "0.1.6"
 description = "Cross-platform profile and process manager for openfortivpn"
 authors = ["baozaodetudou"]
 edition = "2021"

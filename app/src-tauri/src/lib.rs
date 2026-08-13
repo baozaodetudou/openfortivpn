@@ -3326,28 +3326,7 @@ fn refresh_tray(app: &AppHandle) {
 
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(format!("OpenFortiVPN Manager · {status_text}")));
-        let title = if statuses
-            .iter()
-            .filter(|status| **status == "connected")
-            .count()
-            > 0
-        {
-            format!(
-                "VPN · {}",
-                statuses
-                    .iter()
-                    .filter(|status| **status == "connected")
-                    .count()
-            )
-        } else if statuses
-            .iter()
-            .any(|status| matches!(*status, "starting" | "connecting" | "disconnecting"))
-        {
-            "VPN …".to_string()
-        } else {
-            "VPN".to_string()
-        };
-        let _ = tray.set_title(Some(title));
+        let _ = tray.set_title(Some(""));
     }
 }
 

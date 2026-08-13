@@ -14,6 +14,11 @@ Releases
 This high level changelog is usually updated when a release is tagged.
 On the master branch there may be changes that are not (yet) described here.
 
+### OpenFortiVPN Manager 0.1.6
+
+* [~] show only the application icon in the system tray or macOS menu bar,
+  keeping connection status in the tooltip and tray menu
+
 ### OpenFortiVPN Manager 0.1.5
 
 * [-] encode every non-ASCII VPN-password byte deterministically instead of

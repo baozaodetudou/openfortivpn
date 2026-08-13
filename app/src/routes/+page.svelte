@@ -1159,7 +1159,7 @@
 
     <div class="sidebar-footer">
       <span>{engine?.platform ?? "desktop"}</span>
-      <span>v0.1.5</span>
+      <span>v0.1.6</span>
     </div>
   </aside>
 
