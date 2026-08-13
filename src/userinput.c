@@ -53,8 +53,12 @@ static char *uri_escape(const char *string)
 			}
 			escaped = tmp;
 		}
-		if (isalnum(*string) || *string == '-' || *string == '_' ||
-		    *string == '.' || *string == '~')
+		unsigned char byte = (unsigned char)*string;
+
+		if ((byte >= 'A' && byte <= 'Z') ||
+		    (byte >= 'a' && byte <= 'z') ||
+		    (byte >= '0' && byte <= '9') || byte == '-' ||
+		    byte == '_' || byte == '.' || byte == '~')
 			escaped[real_len++] = *string;
 		else
 			real_len += sprintf(&escaped[real_len], "%%%02X",
@@ -79,8 +83,8 @@ static char *uri_unescape(const char *string)
 		return NULL;
 
 	while (string[i]) {
-		if (string[i] == '%' && isxdigit(string[i + 1])
-		    && isxdigit(string[i + 2])) {
+		if (string[i] == '%' && isxdigit((unsigned char)string[i + 1])
+		    && isxdigit((unsigned char)string[i + 2])) {
 			sscanf(&string[i + 1], "%02hhx",
 			       (unsigned char *)&unescaped[real_len]);
 			i += 3;

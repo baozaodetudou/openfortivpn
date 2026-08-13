@@ -10,6 +10,7 @@
   import type {
     AppExitBlocked,
     AutoConnectError,
+    DesktopPreferences,
     EngineInfo,
     InstanceStatus,
     InstanceView,
@@ -19,6 +20,7 @@
     RemoteAccessError,
     RemoteAccessStatus,
     RemoteAccessUpdate,
+    TrayActionError,
     VpnEngineEvent,
     VpnProfile,
   } from "$lib/types";
@@ -92,11 +94,6 @@
   let password = $state("");
   let rememberPassword = $state(true);
   let editing = $state(false);
-  let credentialPrompt = $state<ProfileView | null>(null);
-  let connectionPassword = $state("");
-  let connectionRememberPassword = $state(true);
-  let credentialBusy = $state(false);
-  let credentialError = $state("");
   let loading = $state(true);
   let busy = $state(false);
   let errorMessage = $state("");
@@ -128,6 +125,13 @@
   let accentPreference = $state<AccentPreference>("mint");
   let uiScale = $state(100);
   let appearanceError = $state("");
+  let desktopPreferences = $state<DesktopPreferences>({
+    closeToTray: true,
+    startMinimized: true,
+  });
+  let desktopPreferencesLoading = $state(true);
+  let desktopPreferencesBusy = $state(false);
+  let desktopPreferencesError = $state("");
   const seenCertificateEvents = new Set<string>();
   const pendingCertificates = new Set<string>();
 
@@ -179,6 +183,28 @@
   );
   let selectedConnectionActive = $derived(
     selectedInstance ? isActive(selectedInstance.status) : false,
+  );
+  let selectedAuthenticationFailed = $derived(
+    selectedInstance?.message.includes("VPN 身份验证失败") ?? false,
+  );
+  let activeRouteOwners = $derived(
+    profiles.filter(
+      (entry) =>
+        entry.profile.setRoutes &&
+        profileHasActiveConnection(entry.profile.id),
+    ).length,
+  );
+  let activeDnsOwners = $derived(
+    profiles.filter(
+      (entry) =>
+        entry.profile.setDns && profileHasActiveConnection(entry.profile.id),
+    ).length,
+  );
+  let parallelNetworkWarning = $derived(
+    activeCount > 1 && (activeRouteOwners > 1 || activeDnsOwners > 1),
+  );
+  let credentialStoreName = $derived(
+    engine?.platform === "macos" ? "本机凭据文件" : "系统凭据库",
   );
 
   const statusLabel: Record<InstanceStatus, string> = {
@@ -396,6 +422,17 @@
     return error instanceof Error ? error.message : String(error);
   }
 
+  function isVpnCredentialError(message: string) {
+    return [
+      "VPN 密码已不存在",
+      "VPN 密码无法使用",
+      "当前没有可用的 VPN 密码",
+      "无法从系统凭据库读取密码",
+      "本机凭据文件中的 VPN 密码无法使用",
+      "本机凭据存储中的 VPN 密码",
+    ].some((fragment) => message.includes(fragment));
+  }
+
   function formatFingerprint(digest: string) {
     return digest
       .toUpperCase()
@@ -542,20 +579,6 @@
     editing = true;
   }
 
-  function openCredentialPrompt(view: ProfileView) {
-    credentialPrompt = view;
-    connectionPassword = "";
-    connectionRememberPassword = true;
-    credentialError = "";
-  }
-
-  function closeCredentialPrompt() {
-    if (credentialBusy) return;
-    credentialPrompt = null;
-    connectionPassword = "";
-    credentialError = "";
-  }
-
   function editProfile(view: ProfileView) {
     const instance = latestInstanceForProfile(view.profile.id);
     if (instance && isActive(instance.status)) {
@@ -579,7 +602,7 @@
       rememberPassword && (password.length > 0 || Boolean(existing?.passwordStored));
     if (draft.autoConnect && !willHaveStoredPassword) {
       showError(
-        "要启用“应用启动后自动连接”，请输入密码并勾选“保存密码到系统凭据库”，或保留这个配置已有的系统凭据。",
+        "要启用“应用启动后自动连接”，请输入密码并勾选“保存密码到本机凭据存储”，或保留这个配置已有的凭据。",
       );
       return;
     }
@@ -608,11 +631,14 @@
 
   async function deleteProfile(view: ProfileView) {
     const instance = latestInstanceForProfile(view.profile.id);
-    if (instance && isActive(instance.status)) {
-      showError("请先断开这个配置的连接，再删除配置");
-      return;
-    }
-    if (!window.confirm(`确定删除“${view.profile.name}”吗？`)) return;
+    const active = Boolean(instance && isActive(instance.status));
+    if (
+      !window.confirm(
+        active
+          ? `“${view.profile.name}”仍在连接。确定取消自动重连、断开 VPN，并删除配置和已保存密码吗？`
+          : `确定删除“${view.profile.name}”及其已保存密码吗？`,
+      )
+    ) return;
     busy = true;
     try {
       await invoke("delete_profile", { profileId: view.profile.id });
@@ -635,7 +661,8 @@
     if (currentInstance && isActive(currentInstance.status)) return;
 
     if (!view.hasSecret && !view.passwordStored) {
-      openCredentialPrompt(view);
+      editProfile(view);
+      showError("该配置没有可用的 VPN 密码，请在配置编辑器中输入并保存后再连接");
       return;
     }
 
@@ -665,55 +692,33 @@
         profileId: view.profile.id,
       });
       upsertInstance(instance);
-      showSuccess("连接进程已启动");
+      showSuccess(
+        instance.status === "connected"
+          ? "该配置已经连接"
+          : instance.status === "starting" || instance.status === "connecting"
+            ? "连接正在进行"
+            : "连接进程已启动",
+      );
     } catch (error) {
       const message = errorText(error);
       showError(message);
-      if (
-        message.includes("VPN 密码已不存在") ||
-        message.includes("VPN 密码无法使用") ||
-        message.includes("当前没有可用的 VPN 密码")
-      ) {
+      if (isVpnCredentialError(message)) {
         try {
           const profileList = await invoke<ProfileView[]>("list_profiles");
           profiles = profileList;
           const current = profileList.find(
             (entry) => entry.profile.id === view.profile.id,
           );
-          if (current) openCredentialPrompt(current);
+          if (current) {
+            editProfile(current);
+            showError("已打开配置编辑器，请重新输入并保存 VPN 密码");
+          }
         } catch {
           // Keep the original connection error visible.
         }
       }
     } finally {
       busy = false;
-    }
-  }
-
-  async function saveCredentialAndConnect(event: SubmitEvent) {
-    event.preventDefault();
-    const current = credentialPrompt;
-    if (!current || credentialBusy || !connectionPassword) return;
-
-    credentialBusy = true;
-    credentialError = "";
-    try {
-      const saved = await invoke<ProfileView>("save_profile", {
-        input: {
-          profile: current.profile,
-          password: connectionPassword,
-          rememberPassword: connectionRememberPassword,
-        },
-      });
-      upsertProfile(saved);
-      credentialPrompt = null;
-      connectionPassword = "";
-      await startProfile(saved);
-    } catch (error) {
-      credentialError = errorText(error);
-    } finally {
-      connectionPassword = "";
-      credentialBusy = false;
     }
   }
 
@@ -752,12 +757,7 @@
 
     busy = true;
     try {
-      await invoke("stop_instance", {
-        instanceId: instance.id,
-        profileId: instance.profileId,
-      });
-      await waitForProfileToStop(view.profile.id);
-      const nextInstance = await invoke<InstanceView>("start_profile", {
+      const nextInstance = await invoke<InstanceView>("reconnect_profile", {
         profileId: view.profile.id,
       });
       upsertInstance(nextInstance);
@@ -828,6 +828,81 @@
     } finally {
       autostartBusy = false;
     }
+  }
+
+  async function refreshDesktopPreferences() {
+    desktopPreferencesLoading = true;
+    desktopPreferencesError = "";
+    try {
+      desktopPreferences = await invoke<DesktopPreferences>(
+        "get_desktop_preferences",
+      );
+    } catch (error) {
+      desktopPreferencesError = `无法读取后台运行设置：${errorText(error)}`;
+    } finally {
+      desktopPreferencesLoading = false;
+    }
+  }
+
+  async function toggleDesktopPreference(
+    key: keyof DesktopPreferences,
+    event: Event,
+  ) {
+    if (desktopPreferencesLoading || desktopPreferencesBusy) return;
+    const previous = desktopPreferences;
+    const next = {
+      ...desktopPreferences,
+      [key]: (event.currentTarget as HTMLInputElement).checked,
+    };
+    desktopPreferencesBusy = true;
+    desktopPreferencesError = "";
+    desktopPreferences = next;
+    try {
+      desktopPreferences = await invoke<DesktopPreferences>(
+        "update_desktop_preferences",
+        { preferences: next },
+      );
+    } catch (error) {
+      desktopPreferences = previous;
+      desktopPreferencesError = `无法保存后台运行设置：${errorText(error)}`;
+    } finally {
+      desktopPreferencesBusy = false;
+    }
+  }
+
+  async function handleTrayActionError(error: TrayActionError) {
+    if (error.profileId) selectedProfileId = error.profileId;
+    showError(error.message);
+    if (error.profileId && isVpnCredentialError(error.message)) {
+      try {
+        const profileList = await invoke<ProfileView[]>("list_profiles");
+        profiles = profileList;
+        const profile = profileList.find(
+          (entry) => entry.profile.id === error.profileId,
+        );
+        if (profile) {
+          editProfile(profile);
+          showError("已打开配置编辑器，请重新输入并保存 VPN 密码");
+        }
+      } catch {
+        // Keep the original tray action error visible.
+      }
+    }
+    if (error.message.includes("系统 helper")) {
+      try {
+        privilegeStatus = await invoke<PrivilegeStatus>("privilege_status");
+        if (privilegeStatus.required && !privilegeStatus.ready) {
+          pendingPrivilegeProfileId = error.profileId ?? "";
+          privilegeModalOpen = true;
+        }
+      } catch {
+        // Keep the original tray action error visible.
+      }
+    }
+  }
+
+  function quitApplication() {
+    void invoke("quit_app");
   }
 
   function openRemoteSettings() {
@@ -958,6 +1033,7 @@
     window.addEventListener("keydown", handleAppearanceShortcut);
     void refresh();
     void refreshAutostart();
+    void refreshDesktopPreferences();
     void listen<InstanceView>("vpn-instance-changed", ({ payload }) => {
       upsertInstance(payload);
     }).then((unlisten) => unlisteners.push(unlisten));
@@ -993,6 +1069,9 @@
       privilegeError = payload.message;
       privilegeModalOpen = Boolean(privilegeStatus?.required);
       showError(payload.message);
+    }).then((unlisten) => unlisteners.push(unlisten));
+    void listen<TrayActionError>("vpn-tray-action-error", ({ payload }) => {
+      void handleTrayActionError(payload);
     }).then((unlisten) => unlisteners.push(unlisten));
 
     return () => {
@@ -1080,7 +1159,7 @@
 
     <div class="sidebar-footer">
       <span>{engine?.platform ?? "desktop"}</span>
-      <span>v0.1.2</span>
+      <span>v0.1.5</span>
     </div>
   </aside>
 
@@ -1117,6 +1196,13 @@
               {selectedInstance.status === "disconnecting" ? "断开中…" : "断开"}
             </button>
           {:else}
+            {#if selectedAuthenticationFailed}
+              <button
+                class="secondary-button"
+                disabled={busy}
+                onclick={() => editProfile(selectedProfile!)}
+              >编辑配置和密码</button>
+            {/if}
             <button
               class="primary-button"
               disabled={busy || !engine?.available}
@@ -1137,6 +1223,18 @@
     {/if}
     {#if successMessage}
       <div class="notice success"><span>✓</span><b>{successMessage}</b></div>
+    {/if}
+    {#if parallelNetworkWarning}
+      <div class="notice warning">
+        <span>!</span>
+        <b>
+          当前有 {activeCount} 个 VPN 同时运行；{activeRouteOwners > 1
+            ? `${activeRouteOwners} 个配置正在设置路由`
+            : "路由由一个配置管理"}，{activeDnsOwners > 1
+            ? `${activeDnsOwners} 个配置正在设置 DNS`
+            : "DNS 由一个配置管理"}。若无法同时访问，请让两个网关下发不重叠的分流路由，并只让一个 VPN 接管默认路由或全局 DNS。
+        </b>
+      </div>
     {/if}
 
     <section class="metrics">
@@ -1161,7 +1259,7 @@
             <div><small>当前配置</small><h2>{selectedProfile.profile.name}</h2></div>
             <span class:ready={selectedProfile.hasSecret} class="secret-state">
               {selectedProfile.passwordStored
-                ? "密码已存系统凭据库"
+                ? `密码已存${credentialStoreName}`
                 : selectedProfile.hasSecret
                   ? "密码仅本次会话"
                   : "需要密码"}
@@ -1181,7 +1279,7 @@
             <div><dt>DNS</dt><dd>{selectedProfile.profile.setDns ? "启用" : "禁用"}</dd></div>
             <div><dt>应用启动后自动连接</dt><dd>{selectedProfile.profile.autoConnect ? "启用" : "关闭"}</dd></div>
             <div><dt>意外断线自动重连</dt><dd>{selectedProfile.profile.autoReconnect ? "启用" : "关闭"}</dd></div>
-            <div><dt>系统凭据库</dt><dd>{selectedProfile.passwordStored ? "已保存密码" : "未保存"}</dd></div>
+            <div><dt>{credentialStoreName}</dt><dd>{selectedProfile.passwordStored ? "已保存密码" : "未保存"}</dd></div>
           </dl>
           <div class="card-actions">
             <button class="ghost-button" onclick={() => copyConfig(selectedProfile!)}>
@@ -1189,10 +1287,10 @@
             </button>
             <button
               class="danger-ghost"
-              disabled={busy || selectedConnectionActive}
+              disabled={busy}
               onclick={() => deleteProfile(selectedProfile!)}
             >
-              删除
+              {selectedConnectionActive ? "断开并删除" : "删除"}
             </button>
           </div>
         </article>
@@ -1377,7 +1475,7 @@
           <label class:disabled={autostartLoading || autostartBusy} class="toggle setting-row">
             <div class="setting-row-copy">
               <b>登录时启动应用</b>
-              <small>{autostartLoading ? "正在读取系统状态…" : "登录电脑后自动打开连接管理器"}</small>
+              <small>{autostartLoading ? "正在读取系统状态…" : "登录电脑后启动，并保持 VPN 后台能力"}</small>
             </div>
             <input
               type="checkbox"
@@ -1390,6 +1488,42 @@
           {#if autostartError}
             <p class="settings-error" role="alert">{autostartError}</p>
           {/if}
+          <label class:disabled={desktopPreferencesLoading || desktopPreferencesBusy} class="toggle setting-row">
+            <div class="setting-row-copy">
+              <b>关闭窗口后驻留菜单栏</b>
+              <small>点击关闭只隐藏窗口，VPN 和自动重连继续运行</small>
+            </div>
+            <input
+              type="checkbox"
+              checked={desktopPreferences.closeToTray}
+              disabled={desktopPreferencesLoading || desktopPreferencesBusy}
+              onchange={(event) => toggleDesktopPreference("closeToTray", event)}
+            />
+            <span></span>
+          </label>
+          <label class:disabled={desktopPreferencesLoading || desktopPreferencesBusy} class="toggle setting-row">
+            <div class="setting-row-copy">
+              <b>登录启动时在后台运行</b>
+              <small>开机登录后不弹出主窗口，可从系统菜单栏打开</small>
+            </div>
+            <input
+              type="checkbox"
+              checked={desktopPreferences.startMinimized}
+              disabled={desktopPreferencesLoading || desktopPreferencesBusy}
+              onchange={(event) => toggleDesktopPreference("startMinimized", event)}
+            />
+            <span></span>
+          </label>
+          {#if desktopPreferencesError}
+            <p class="settings-error" role="alert">{desktopPreferencesError}</p>
+          {/if}
+          <div class="system-setting-row">
+            <span class="system-status-dot ready"></span>
+            <span>
+              <b>系统菜单栏 / 托盘</b>
+              <small>常驻显示连接状态，并提供连接、重连、断开和退出操作</small>
+            </span>
+          </div>
           <div class="system-setting-row">
             <span class:ready={!privilegeStatus?.required || privilegeStatus?.ready} class="system-status-dot"></span>
             <span>
@@ -1411,7 +1545,12 @@
       {#if appearanceError}<div class="settings-error-banner" role="alert">{appearanceError}</div>{/if}
       <div class="settings-footer">
         <button type="button" class="reset-settings" onclick={resetAppearance}>恢复默认外观</button>
-        <button type="button" class="primary-button" onclick={closeAppSettings}>完成</button>
+        <div class="settings-footer-actions">
+          <button type="button" class="danger-ghost quit-application" onclick={quitApplication}>
+            {activeCount ? "断开 VPN 并退出" : "退出应用"}
+          </button>
+          <button type="button" class="primary-button" onclick={closeAppSettings}>完成</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1462,58 +1601,6 @@
       <div class="modal-actions">
         <button type="button" class="secondary-button" disabled={remoteBusy} onclick={closeRemoteSettings}>{remoteToken ? "完成" : "取消"}</button>
         <button type="submit" class="primary-button" disabled={remoteBusy}>{remoteBusy ? "正在应用…" : "保存并应用"}</button>
-      </div>
-    </form>
-  </div>
-{/if}
-
-{#if credentialPrompt}
-  <div class="modal-backdrop credential-backdrop" role="presentation">
-    <form
-      class="credential-modal"
-      aria-labelledby="credential-title"
-      onsubmit={saveCredentialAndConnect}
-    >
-      <div class="modal-heading">
-        <div>
-          <small>VPN CREDENTIAL</small>
-          <h2 id="credential-title">连接 {credentialPrompt.profile.name}</h2>
-        </div>
-        <button type="button" disabled={credentialBusy} onclick={closeCredentialPrompt}>×</button>
-      </div>
-      <p class="credential-description">
-        输入 VPN 账号密码。它与电脑管理员密码不同；默认安全保存到操作系统凭据库，以后连接无需重复输入。
-      </p>
-      <label class="credential-password">
-        <span>VPN 密码</span>
-        <input
-          type="password"
-          autocomplete="current-password"
-          maxlength="256"
-          required
-          disabled={credentialBusy}
-          bind:value={connectionPassword}
-          placeholder="输入 VPN 账号密码"
-        />
-      </label>
-      <label class:disabled={credentialPrompt.profile.autoConnect} class="toggle credential-save">
-        <input
-          type="checkbox"
-          bind:checked={connectionRememberPassword}
-          disabled={credentialBusy || credentialPrompt.profile.autoConnect}
-        />
-        <span></span>
-        <b>保存到系统凭据库（推荐）</b>
-      </label>
-      {#if credentialPrompt.profile.autoConnect}
-        <p class="credential-note">此配置启用了应用启动后自动连接，因此必须安全保存密码。</p>
-      {/if}
-      {#if credentialError}<div class="credential-error" role="alert">{credentialError}</div>{/if}
-      <div class="modal-actions">
-        <button type="button" class="secondary-button" disabled={credentialBusy} onclick={closeCredentialPrompt}>取消</button>
-        <button type="submit" class="primary-button" disabled={credentialBusy || !connectionPassword}>
-          {credentialBusy ? "正在保存…" : "保存并连接"}
-        </button>
       </div>
     </form>
   </div>
@@ -1613,22 +1700,24 @@
           <input placeholder="可选" bind:value={draft.realm} />
         </label>
         <label class="span-2">
-          <span>密码 <em>{rememberPassword ? "系统凭据库" : "仅本次会话"}</em></span>
+          <span>密码 <em>{rememberPassword ? credentialStoreName : "仅本次会话"}</em></span>
           <input
             type="password"
             autocomplete="current-password"
             maxlength="256"
             placeholder={draft.id
               ? rememberPassword
-                ? "留空则保留已有系统凭据"
+                ? "留空则保留已有凭据"
                 : "留空则不更新当前会话密码"
               : "输入 VPN 密码"}
             bind:value={password}
           />
           <small class="field-help">
             {rememberPassword
-              ? "密码会写入操作系统安全凭据库；留空会保留已有凭据。"
-              : "不会写入磁盘；取消保存会删除已有系统凭据，已有或本次输入的密码仍可用于当前会话。"}
+              ? engine?.platform === "macos"
+                ? "密码会写入当前用户专用的本机凭据文件；留空会保留已有凭据。"
+                : "密码会写入操作系统安全凭据库；留空会保留已有凭据。"
+              : "不会写入磁盘；取消保存会删除已有凭据，已有或本次输入的密码仍可用于当前会话。"}
           </small>
         </label>
         <label class="span-2">
@@ -1652,7 +1741,7 @@
           <label class="toggle"><input type="checkbox" bind:checked={draft.pppdUsePeerdns} /><span></span><b>使用 Peer DNS</b></label>
           <label class="toggle"><input type="checkbox" bind:checked={draft.halfInternetRoutes} /><span></span><b>半默认路由</b></label>
           <label class="toggle"><input type="checkbox" bind:checked={draft.useSudo} /><span></span><b>使用系统 Helper</b></label>
-          <label class="toggle"><input type="checkbox" bind:checked={rememberPassword} /><span></span><b>保存密码到系统凭据库</b></label>
+          <label class="toggle"><input type="checkbox" bind:checked={rememberPassword} /><span></span><b>保存密码到{credentialStoreName}</b></label>
           <label class="toggle"><input type="checkbox" bind:checked={draft.autoConnect} /><span></span><b>应用启动后自动连接</b></label>
           <label class="toggle"><input type="checkbox" bind:checked={draft.autoReconnect} /><span></span><b>意外断线自动重连</b></label>
         </div>
@@ -1760,6 +1849,7 @@
   .primary-button:disabled, .secondary-button:disabled, .ghost-button:disabled, .danger-ghost:disabled { cursor: not-allowed; opacity: .48; transform: none; }
   .notice { display: flex; align-items: center; gap: 10px; margin: -8px 0 18px; padding: 10px 13px; border-radius: 10px; font-size: 11px; } .notice span { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; } .notice b { font-weight: 650; } .notice button { margin-left: auto; color: inherit; background: transparent; cursor: pointer; font-size: 18px; }
   .notice.error { border: 1px solid rgba(255,124,141,.24); color: var(--danger-text); background: rgba(255,124,141,.08); } .notice.error span { background: rgba(255,124,141,.14); } .notice.success { border: 1px solid rgba(var(--brand-rgb),.2); color: var(--brand-strong); background: rgba(var(--brand-rgb),.08); } .notice.success span { background: rgba(var(--brand-rgb),.14); }
+  .notice.warning { border: 1px solid rgba(246,200,108,.22); color: var(--warning-text); background: rgba(246,200,108,.07); line-height: 1.55; } .notice.warning span { flex: 0 0 auto; background: rgba(246,200,108,.14); }
   .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; } .metrics article { display: flex; align-items: center; gap: 13px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel-translucent); } .metrics small, .metrics strong { display: block; } .metrics small { color: var(--muted); font-size: 10px; } .metrics strong { margin-top: 2px; font-size: 20px; }
   .metric-icon { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; font-size: 16px; } .metric-icon.green { color: var(--brand); background: var(--brand-soft); } .metric-icon.blue { color: var(--blue); background: rgba(112,167,255,.1); } .metric-icon.amber { color: var(--warning); background: rgba(246,200,108,.1); }
   .overview-grid { display: grid; grid-template-columns: minmax(310px, .9fr) minmax(360px, 1.1fr); gap: 14px; margin-bottom: 14px; }
@@ -1826,18 +1916,9 @@
   .remote-setting-row { cursor: pointer; } .remote-setting-row:hover b { color: var(--brand); }
   .settings-error-banner { margin-top: 13px; padding: 9px 11px; border: 1px solid rgba(255,124,141,.24); border-radius: 9px; color: var(--danger-text); background: rgba(255,124,141,.08); font-size: 9px; }
   .settings-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .settings-footer-actions { display: flex; gap: 8px; align-items: center; }
+  .quit-application { margin-left: 0; padding: 9px 12px; }
   .reset-settings { color: var(--muted); background: transparent; cursor: pointer; font-size: 9px; } .reset-settings:hover { color: var(--brand); }
-  .credential-backdrop { z-index: 48; }
-  .credential-modal { width: min(470px, 94vw); padding: 24px; border: 1px solid rgba(var(--brand-rgb),.28); border-radius: 17px; background: var(--modal-bg); box-shadow: 0 30px 90px var(--shadow); }
-  .credential-description { margin: -4px 0 17px; color: var(--text-soft); font-size: 10px; line-height: 1.7; }
-  .credential-password span { display: block; margin: 0 0 7px 2px; color: var(--text-soft); font-size: 10px; font-weight: 650; }
-  .credential-password input { width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: var(--control-bg); font-size: 11px; transition: border-color .15s; }
-  .credential-password input:focus { border-color: rgba(var(--brand-rgb),.5); }
-  .credential-password input::placeholder { color: var(--muted-faint); }
-  .credential-save { width: fit-content; margin-top: 14px; }
-  .credential-save.disabled { cursor: not-allowed; opacity: .72; }
-  .credential-note { margin: 10px 0 0; color: var(--muted); font-size: 9px; line-height: 1.55; }
-  .credential-error { margin-top: 12px; padding: 10px 11px; border: 1px solid rgba(255,124,141,.24); border-radius: 9px; color: var(--danger-text); background: rgba(255,124,141,.08); font-size: 10px; line-height: 1.5; }
   .privilege-backdrop { z-index: 50; }
   .remote-backdrop { z-index: 55; }
   .remote-modal { width: min(620px, 94vw); max-height: 92vh; overflow-y: auto; padding: 24px; border: 1px solid rgba(var(--brand-rgb),.28); border-radius: 17px; background: var(--modal-bg); box-shadow: 0 30px 90px var(--shadow); }

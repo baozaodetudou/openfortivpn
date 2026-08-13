@@ -1,6 +1,6 @@
 {
   "name": "openfortivpn-manager",
-  "version": "0.1.2",
+  "version": "0.1.5",
   "description": "Cross-platform profile and process manager for openfortivpn",
   "type": "module",
   "scripts": {

@@ -277,6 +277,12 @@ if(BUILD_TESTING)
         )
     endif()
     add_test(NAME ppp_state_machine COMMAND test_ppp)
+
+    add_executable(test_url_encoding
+        tests/test_url_encoding.c
+    )
+    target_include_directories(test_url_encoding PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME url_encoding COMMAND test_url_encoding)
 endif()
 
 # Install target

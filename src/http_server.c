@@ -203,7 +203,7 @@ static int process_request(int new_socket, char *id)
 	id[MAX_SAML_SESSION_ID_LENGTH] = 0; // Arrays in the structs are one byte extra
 
 	for (int i = 0; i < id_length; i++) {
-		if (isalnum(id[i]) || id[i] == '-')
+		if (isalnum((unsigned char)id[i]) || id[i] == '-')
 			continue;
 		log_error("Invalid id format\n");
 		send_status_response(new_socket, "Invalid SAML session id received from Fortinet server. VPN could not be established.");

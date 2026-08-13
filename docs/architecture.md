@@ -25,6 +25,14 @@ may declare an instance terminal. Per-profile generations prevent delayed
 events, stale command responses and old automatic-reconnect timers from
 reviving a stopped connection.
 
+The desktop window lifetime is separate from the Rust control-plane lifetime.
+Native window close is intercepted: the default policy hides the window while
+the persistent system tray and retry scheduler remain active. Tray profile
+actions call the Rust control plane directly and do not depend on a mounted
+WebView. Only an explicit application quit begins tunnel shutdown and route/DNS
+cleanup. Login autostart is marked with `--autostart`, allowing the process and
+tray to start without foregrounding the window.
+
 On Unix, every tunnel has a dedicated process group and a mode-`0600` runtime
 record. Disconnect and application exit ask the installed restricted helper to
 signal the complete group and wait for the bundled engine to restore routes and
@@ -68,12 +76,16 @@ port-forwarding is not a supported production deployment.
 
 ## Credentials and privileges
 
-VPN passwords are either session-only or stored in macOS Keychain, Windows
-Credential Manager or Linux Secret Service. They are never written to the
-profile JSON or returned by the remote API. Profile JSON persists only the
-non-secret fact that a credential is expected to exist. Stored credentials are
-resolved on demand (or for startup auto-connect), so normal startup does not
-prompt once per saved profile.
+VPN passwords are either session-only or saved outside the profile JSON.
+Windows uses Credential Manager and Linux uses Secret Service. The ad-hoc signed
+macOS build uses an app-owned `credentials.json` with a mode-`0700` parent and a
+mode-`0600`, current-user-owned regular file. It intentionally never follows a
+symlink or automatically opens legacy Keychain VPN items, preventing signature
+changes from producing repeated authorization prompts. This is a permission
+boundary rather than encryption: the logged-in user, root and same-user
+processes can read the file. Profile JSON persists only the non-secret fact that
+a credential is expected to exist, and neither profile JSON nor the remote API
+returns a password.
 
 Unix installs a narrow helper and matching engine into fixed, root-owned paths.
 Its sudoers rule permits only that helper. The helper validates an allowlist of
@@ -91,6 +103,7 @@ A release is not considered production-ready until all applicable gates pass:
 - macOS app-signature and DMG checksum validation;
 - Linux and Windows bundle builds in CI;
 - connect, disconnect, reconnect, retry cancellation and certificate-TOFU E2E;
+- close-to-tray, background reconnect, tray actions and explicit-quit cleanup;
 - authenticated HTTPS API tests covering rejected, read-only and mutating calls;
 - dependency, secret, license and code-signing review;
 - documented upgrade, rollback, backup and incident-response procedures.

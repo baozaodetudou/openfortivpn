@@ -49,16 +49,28 @@ packages and browser surfaces use one consistent product identity.
 Ordinary profile fields are persisted in the operating system's application
 data directory. On Unix systems, the profile file is created with mode `0600`.
 Passwords are never written to `profiles.json`; the file stores only a
-`passwordStored` boolean so credential availability remains stable while the
-operating-system credential store is loaded on demand.
+`passwordStored` boolean. Windows stores VPN passwords in Credential Manager and
+Linux stores them in Secret Service. The ad-hoc signed macOS build deliberately
+does not read VPN passwords from Keychain: changing app signatures otherwise
+causes repeated system authorization prompts. It uses a separate
+`credentials.json` in the app data directory, with a mode-`0700` parent and a
+mode-`0600` regular file owned by the current user. This file is not encrypted;
+the logged-in user, root and same-user processes can read it.
 
-The **Save password in system credential store** option stores a password in
-macOS Keychain, Windows Credential Manager or Linux Secret Service. It can be
-disabled for any profile; in that case the password is held in memory and is
-available only for the current application session. New profiles enable secure
-password storage by default. If a session-only password is missing, **Connect**
-opens a focused credential dialog instead of sending the user back through the
-complete profile editor.
+The **Save password in local credential storage** option can be disabled for
+any profile; in that case the password is held in memory and is available only
+for the current application session. New profiles enable password storage by
+default. After upgrading from a legacy Keychain build, each existing macOS
+profile opens the normal profile editor so its VPN password can be entered once
+and then reused from the new local copy. The manager does not automatically open
+the old Keychain item, so no VPN connection should trigger a Keychain
+authorization dialog.
+
+Passwords containing non-ASCII characters are preserved as UTF-8 and every byte
+is percent-encoded before HTTP authentication. After a gateway rejects
+authentication, the desktop offers **Edit profile and password** and uses the
+same complete save path as ordinary profile editing; there is no separate
+password-only connection path.
 
 ## Startup and automatic connection
 
@@ -66,8 +78,8 @@ The global **Start application at login** setting is available on Linux, macOS
 and Windows. It starts the manager after the user signs in.
 
 Each profile can enable **Connect automatically after application startup**.
-Automatic connection requires that profile's password to be saved in the system
-credential store so that it is available after an application restart. A
+Automatic connection requires that profile's password to be saved in the local
+credential storage so that it is available after an application restart. A
 profile without a securely stored password remains disconnected until the user
 provides one. On Linux and macOS, profiles that use sudo wait until the startup
 system-helper installation described below succeeds; after its one-time
@@ -79,6 +91,21 @@ uses the password already available in the current app session and retries with
 a bounded exponential delay from 3 to 30 seconds. A user-requested disconnect
 never triggers automatic reconnection. Authentication and certificate-trust
 failures also stop the retry loop so they can be corrected explicitly.
+
+## Background operation and system tray
+
+Closing the main window hides it by default instead of terminating the control
+plane. Active tunnels and their automatic-reconnect timers continue running in
+the background. The persistent macOS menu-bar, Windows notification-area or
+Linux system-tray menu shows the aggregate state and provides profile-level
+connect, reconnect and disconnect actions, plus **Disconnect all**.
+
+Use **Quit application** in the tray menu or **Disconnect VPN and quit** in the
+settings panel to terminate the manager. An explicit quit stops every tunnel
+and waits for route and DNS cleanup before process exit. The desktop settings
+can restore native close-to-quit behavior. Login startup passes a dedicated
+autostart marker and starts with the main window hidden by default; this can
+also be changed in desktop settings.
 
 ## Privileges
 
@@ -112,10 +139,10 @@ so the next launch can identify and clean the exact process group after helper
 recovery.
 
 This administrator password is not the VPN password. The VPN password belongs
-to an individual profile and continues to be saved in macOS Keychain or Linux
-Secret Service when **Save password in system credential store** is enabled, or
-held in memory for only the current application session when it is disabled.
-The administrator password is used solely for the one-time helper installation.
+to an individual profile and follows the platform credential policy described
+above, or is held in memory for only the current application session when saving
+is disabled. The administrator password is used solely for the one-time helper
+installation.
 
 Stored VPN passwords are loaded only for startup auto-connect or when a profile
 is connected. Ordinary application startup therefore does not enumerate and

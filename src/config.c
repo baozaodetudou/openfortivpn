@@ -135,7 +135,7 @@ int strtob(const char *str)
 		return 1;
 	else if (strcasecmp(str, "false") == 0)
 		return 0;
-	else if (isdigit(str[0]) == 0)
+	else if (isdigit((unsigned char)str[0]) == 0)
 		return -1;
 
 	long i = strtol(str, NULL, 0);
@@ -223,19 +223,19 @@ int load_config(struct vpn_config *cfg, const char *filename)
 		val = equals + 1;
 
 		// Remove heading spaces
-		while (isspace(key[0]))
+		while (isspace((unsigned char)key[0]))
 			key++;
-		while (isspace(val[0]))
+		while (isspace((unsigned char)val[0]))
 			val++;
 		// Remove trailing spaces
 		for (int i = strlen(key) - 1; i > 0; i--) {
-			if (isspace(key[i]))
+			if (isspace((unsigned char)key[i]))
 				key[i] = '\0';
 			else
 				break;
 		}
 		for (int i = strlen(val) - 1; i > 0; i--) {
-			if (isspace(val[i]))
+			if (isspace((unsigned char)val[i]))
 				val[i] = '\0';
 			else
 				break;
