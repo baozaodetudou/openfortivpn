@@ -10,6 +10,11 @@ active. Concurrent profiles should use non-overlapping split routes. Two VPNs
 that both replace the default route or global DNS may conflict at the operating
 system level and are not advertised as a safe configuration.
 
+The desktop settings panel provides native WebView zoom from 80% to 150%,
+system/light/dark appearance modes, selectable accent colors and keyboard zoom
+shortcuts. These non-sensitive UI preferences are stored locally in the WebView
+and do not enter profile configuration or credential storage.
+
 ## Development
 
 ```shell
