@@ -56,6 +56,13 @@ enum Command {
         #[arg(long)]
         purge: bool,
     },
+    /// Restore the complete previously installed manager, engine and unit while stopped.
+    Rollback {
+        #[arg(long)]
+        no_start: bool,
+    },
+    /// Export current metadata to schema 0 for a pre-schema binary rollback; service must be stopped.
+    PrepareLegacyRollback,
     /// Show or rotate the remote access token.
     Token {
         #[arg(long)]
@@ -63,6 +70,32 @@ enum Command {
     },
     /// Show service and profile status.
     Status,
+    /// Export private repository/engine diagnostics; live diagnostics are available in API v2.
+    Diagnostics {
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long, default_value = INSTALLED_ENGINE)]
+        engine: PathBuf,
+    },
+    /// Create a private backup of profiles and stored VPN credentials.
+    Backup {
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Restore profiles and stored VPN credentials while the service is stopped.
+    Restore {
+        #[arg(long)]
+        input: PathBuf,
+    },
+    /// Inspect interrupted attempts, or acknowledge manual process/network recovery.
+    Recovery {
+        /// Remove this attempt only after its processes and network resources were restored.
+        #[arg(long, requires = "network_restored")]
+        acknowledge: Option<String>,
+        /// Confirm the operator restored networking and stopped residual descendants.
+        #[arg(long, requires = "acknowledge")]
+        network_restored: bool,
+    },
     /// Run the HTTPS manager in the foreground.
     Serve {
         #[arg(long, default_value = INSTALLED_ENGINE)]
@@ -73,6 +106,12 @@ enum Command {
         /// Override server.json for this process only.
         #[arg(long)]
         port: Option<u16>,
+        /// Enable the experimental private engine lease/OTP pipe for gateway acceptance testing.
+        #[arg(long)]
+        experimental_control: bool,
+        /// Linux split route/scoped DNS acceptance mode; keeps system exclusivity.
+        #[arg(long, requires = "experimental_control")]
+        experimental_native_network: bool,
     },
 }
 
@@ -111,6 +150,22 @@ async fn main() -> Result<()> {
                 if purge { " (data purged)" } else { "" }
             );
         }
+        Command::Rollback { no_start } => {
+            if storage.config_dir != Storage::default().config_dir
+                || storage.state_dir != Storage::default().state_dir
+                || storage.runtime_dir != Storage::default().runtime_dir
+            {
+                bail!("rollback uses fixed system paths; remove directory override flags");
+            }
+            install::rollback(!no_start)?;
+            println!("previous manager, engine and service bundle restored");
+        }
+        Command::PrepareLegacyRollback => {
+            println!(
+                "schema 0 metadata prepared; private profile/credential backup: {}",
+                storage.prepare_legacy_rollback()?.display()
+            );
+        }
         Command::Token { rotate } => {
             storage.ensure_layout()?;
             let token = if rotate {
@@ -120,23 +175,62 @@ async fn main() -> Result<()> {
             };
             println!("{token}");
             if rotate {
-                eprintln!("token rotated; restart the service to activate it: sudo systemctl restart openfortivpn-manager-headless");
+                eprintln!("token rotated; new API requests use the new token without restarting VPN connections");
             }
         }
         Command::Status => {
             println!("{}", install::service_status(&storage)?);
         }
+        Command::Diagnostics { output, engine } => {
+            let report =
+                openfortivpn_manager_headless::offline_diagnostics(storage, engine).await?;
+            let bytes = serde_json::to_vec_pretty(&report)?;
+            if let Some(output) = output {
+                openfortivpn_manager_core::atomic_file::write_private(&output, &bytes)?;
+                println!("private diagnostic report written: {}", output.display());
+            } else {
+                println!("{}", String::from_utf8(bytes)?);
+            }
+        }
+        Command::Backup { output } => {
+            storage.backup_profiles(&output)?;
+            println!("profile backup written: {}", output.display());
+        }
+        Command::Restore { input } => {
+            storage.restore_profiles(&input)?;
+            println!("profile backup restored; previous configuration retained in a private rollback file");
+        }
+        Command::Recovery { acknowledge, .. } => {
+            if let Some(attempt) = acknowledge {
+                openfortivpn_manager_headless::manager::acknowledge_recovery(&storage, &attempt)?;
+                println!("recovery acknowledged: {attempt}");
+            } else {
+                let _service = storage.service_lock()?;
+                let records = storage
+                    .run_records::<openfortivpn_manager_headless::manager::RecoveryRecord>()?;
+                println!("{}", serde_json::to_string_pretty(&records)?);
+            }
+        }
         Command::Serve {
             engine,
             bind_address,
             port,
+            experimental_control,
+            experimental_native_network,
         } => {
             if !engine.is_file() {
                 bail!("openfortivpn engine not found: {}", engine.display());
             }
-            openfortivpn_manager_headless::serve(storage, engine, bind_address, port)
-                .await
-                .context("headless service failed")?;
+            openfortivpn_manager_headless::serve_with_network(
+                storage,
+                engine,
+                bind_address,
+                port,
+                experimental_control,
+                experimental_native_network,
+            )
+            .await
+            .context("headless service failed")?;
         }
     }
     Ok(())

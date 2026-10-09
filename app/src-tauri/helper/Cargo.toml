@@ -1,9 +1,15 @@
 [package]
 name = "openfortivpn-manager-helper"
-version = "0.1.2"
+version = "0.1.6"
 edition = "2021"
 description = "Narrow privileged lifecycle helper for OpenFortiVPN Manager"
 license = "GPL-3.0-or-later"
 
 [dependencies]
+openfortivpn-manager-core = { path = "../../../crates/manager-core" }
 libc = "0.2"
+zeroize = "1"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

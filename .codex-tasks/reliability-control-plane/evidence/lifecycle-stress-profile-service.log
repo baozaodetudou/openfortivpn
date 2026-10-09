@@ -1,0 +1,16 @@
+
+running 1 test
+cycle=50 logs=549 text_bytes=1644986 resident=13365248 physical_footprint=5718016 high_water=13365248 allocator=(4205472, 110100480, 5980) baseline=None
+cycle=100 logs=1093 text_bytes=3273574 resident=17059840 physical_footprint=9408512 high_water=17059840 allocator=(8234368, 171966464, 10978) baseline=None
+test real_time_lifecycle_and_log_stress has been running for over 60 seconds
+cycle=150 logs=1643 text_bytes=4918574 resident=24961024 physical_footprint=12951552 high_water=24961024 allocator=(18898288, 180891648, 16212) baseline=None
+cycle=200 logs=2000 text_bytes=5987827 resident=27500544 physical_footprint=15491072 high_water=27500544 allocator=(20035808, 189280256, 20872) baseline=Some((183, 27279360))
+cycle=250 logs=2000 text_bytes=5987917 resident=28127232 physical_footprint=16117760 high_water=28127232 allocator=(20066032, 197668864, 24229) baseline=Some((183, 27279360))
+cycle=300 logs=2000 text_bytes=5995991 resident=28422144 physical_footprint=16412672 high_water=28422144 allocator=(20092768, 197668864, 27663) baseline=Some((183, 27279360))
+cycle=350 logs=2000 text_bytes=6000073 resident=28733440 physical_footprint=16723968 high_water=28733440 allocator=(20083616, 197668864, 31094) baseline=Some((183, 27279360))
+cycle=400 logs=2000 text_bytes=5991909 resident=28958720 physical_footprint=16949248 high_water=28958720 allocator=(20060944, 197668864, 34582) baseline=Some((183, 27279360))
+stress completed: 438 cycles in 300 seconds
+test real_time_lifecycle_and_log_stress ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 300.26s
+

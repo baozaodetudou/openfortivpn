@@ -1,12 +1,13 @@
 use anyhow::{anyhow, bail, Context, Result};
 use nix::unistd::Uid;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::storage::Storage;
+use openfortivpn_manager_core::bundle::{Bundle, Target};
+use std::collections::BTreeMap;
 
 pub const INSTALLED_BINARY: &str = "/usr/local/sbin/openfortivpn-manager-headless";
 pub const INSTALLED_ENGINE: &str = "/usr/local/libexec/openfortivpn-manager-headless/openfortivpn";
@@ -34,13 +35,30 @@ pub fn install(engine_source: Option<PathBuf>, start: bool, quiet: bool) -> Resu
 
     let storage = Storage::default();
     storage.ensure_layout()?;
+    stop_installed_service(quiet)?;
+    let service_lock = storage.service_lock()?;
+    ensure_attempts_recovered(&storage)?;
+    let network_directory = openfortivpn_manager_core::network_authority::system_directory()?;
+    let network_guard =
+        openfortivpn_manager_core::network_authority::maintenance_guard(&network_directory)?;
     storage.load_or_create_token()?;
     let settings = storage.load_or_create_settings()?;
-    storage.ensure_certificate(&settings.bind_address)?;
+    storage.ensure_certificate(
+        settings
+            .certificate_name
+            .as_deref()
+            .unwrap_or(&settings.bind_address),
+    )?;
 
-    install_file(&current_exe, Path::new(INSTALLED_BINARY), 0o755)?;
-    install_file(&engine_source, Path::new(INSTALLED_ENGINE), 0o755)?;
-    write_root_file(Path::new(SYSTEMD_UNIT), systemd_unit().as_bytes(), 0o644)?;
+    let mut bundle = installation_bundle(&storage)?;
+    bundle.install(BTreeMap::from([
+        ("manager".into(), read_source(&current_exe)?),
+        ("engine".into(), read_source(&engine_source)?),
+        ("unit".into(), systemd_unit().into_bytes()),
+    ]))?;
+    drop(bundle);
+    drop(service_lock);
+    drop(network_guard);
 
     if start {
         run_systemctl(["daemon-reload"], quiet)?;
@@ -59,15 +77,23 @@ pub fn install(engine_source: Option<PathBuf>, start: bool, quiet: bool) -> Resu
 
 pub fn uninstall(purge: bool) -> Result<()> {
     require_root("uninstall")?;
-    let _ = run_systemctl(
-        ["disable", "--now", "openfortivpn-manager-headless.service"],
-        false,
-    );
+    stop_installed_service(false)?;
+    let storage = Storage::default();
+    let service_lock = storage.service_lock()?;
+    ensure_attempts_recovered(&storage)?;
+    let network_directory = openfortivpn_manager_core::network_authority::system_directory()?;
+    let network_guard =
+        openfortivpn_manager_core::network_authority::maintenance_guard(&network_directory)?;
+    if Path::new(SYSTEMD_UNIT).exists() {
+        run_systemctl(["disable", "openfortivpn-manager-headless.service"], false)?;
+    }
     remove_file_if_exists(Path::new(SYSTEMD_UNIT))?;
     let _ = run_systemctl(["daemon-reload"], false);
     remove_file_if_exists(Path::new(INSTALLED_ENGINE))?;
     remove_file_if_exists(Path::new(INSTALLED_BINARY))?;
     remove_empty_parent(Path::new(INSTALLED_ENGINE))?;
+    drop(service_lock);
+    drop(network_guard);
     if purge {
         for path in [
             Path::new("/etc/openfortivpn-manager-headless"),
@@ -78,6 +104,89 @@ pub fn uninstall(purge: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+pub fn rollback(start: bool) -> Result<InstallResult> {
+    require_root("rollback")?;
+    stop_installed_service(false)?;
+    let storage = Storage::default();
+    let service_lock = storage.service_lock()?;
+    ensure_attempts_recovered(&storage)?;
+    let network_directory = openfortivpn_manager_core::network_authority::system_directory()?;
+    let network_guard =
+        openfortivpn_manager_core::network_authority::maintenance_guard(&network_directory)?;
+    let mut bundle = installation_bundle(&storage)?;
+    bundle.rollback()?;
+    drop(bundle);
+    drop(service_lock);
+    drop(network_guard);
+    run_systemctl(["daemon-reload"], false)?;
+    if start {
+        run_systemctl(["start", "openfortivpn-manager-headless.service"], false)?;
+    }
+    Ok(InstallResult {
+        binary: INSTALLED_BINARY.into(),
+        engine: INSTALLED_ENGINE.into(),
+        unit: SYSTEMD_UNIT.into(),
+    })
+}
+
+fn ensure_attempts_recovered(storage: &Storage) -> Result<()> {
+    if !storage.run_records::<serde_json::Value>()?.is_empty() {
+        bail!("unfinished VPN attempts require recovery before install, rollback or uninstall");
+    }
+    Ok(())
+}
+fn stop_installed_service(quiet: bool) -> Result<()> {
+    if Path::new(SYSTEMD_UNIT).exists() {
+        run_systemctl(["stop", "openfortivpn-manager-headless.service"], quiet)?;
+    }
+    Ok(())
+}
+fn installation_bundle(storage: &Storage) -> Result<Bundle> {
+    let directory = storage.state_dir.join("bundle");
+    fs::create_dir_all(&directory)?;
+    reject_symlink(&directory)?;
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+    let targets = [
+        ("manager", INSTALLED_BINARY, 0o755),
+        ("engine", INSTALLED_ENGINE, 0o755),
+        ("unit", SYSTEMD_UNIT, 0o644),
+    ]
+    .map(|(name, path, mode)| Target {
+        name: name.into(),
+        path: path.into(),
+        mode,
+    })
+    .to_vec();
+    for target in &targets {
+        let parent = target
+            .path
+            .parent()
+            .ok_or_else(|| anyhow!("installation target has no parent"))?;
+        fs::create_dir_all(parent)?;
+    }
+    Bundle::open(&directory, targets).map_err(Into::into)
+}
+
+fn read_source(path: &Path) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut source = OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::libc::O_NOFOLLOW)
+        .open(path)?;
+    let metadata = source.metadata()?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > 256 * 1024 * 1024 {
+        bail!("bundle payload must be a bounded nonempty regular file");
+    }
+    let mut bytes = Vec::new();
+    (&mut source)
+        .take(256 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != metadata.len() {
+        bail!("bundle source changed during staging");
+    }
+    Ok(bytes)
 }
 
 pub fn service_status(storage: &Storage) -> Result<String> {
@@ -107,7 +216,7 @@ pub fn service_status(storage: &Storage) -> Result<String> {
 
 pub fn systemd_unit() -> String {
     format!(
-        "[Unit]\nDescription=OpenFortiVPN Manager headless service\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={INSTALLED_BINARY} serve --engine {INSTALLED_ENGINE}\nRestart=on-failure\nRestartSec=5s\nUMask=0077\nRuntimeDirectory=openfortivpn-manager-headless\nRuntimeDirectoryMode=0700\nStateDirectory=openfortivpn-manager-headless\nStateDirectoryMode=0700\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nKillMode=mixed\nTimeoutStopSec=15s\n\n[Install]\nWantedBy=multi-user.target\n"
+        "[Unit]\nDescription=OpenFortiVPN Manager headless service\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={INSTALLED_BINARY} serve --engine {INSTALLED_ENGINE}\nRestart=on-failure\nRestartSec=5s\nUMask=0077\nRuntimeDirectory=openfortivpn-manager-headless\nRuntimeDirectoryMode=0700\nStateDirectory=openfortivpn-manager-headless\nStateDirectoryMode=0700\nNoNewPrivileges=true\nPrivateTmp=true\nProtectHome=true\nKillMode=mixed\nTimeoutStopSec=45s\n\n[Install]\nWantedBy=multi-user.target\n"
     )
 }
 
@@ -127,40 +236,6 @@ fn validate_source_file(path: &Path, label: &str) -> Result<()> {
             path.display()
         );
     }
-    Ok(())
-}
-
-fn install_file(source: &Path, destination: &Path, mode: u32) -> Result<()> {
-    if source == destination {
-        fs::set_permissions(destination, fs::Permissions::from_mode(mode))?;
-        return Ok(());
-    }
-    validate_source_file(source, "source")?;
-    let contents = fs::read(source)?;
-    write_root_file(destination, &contents, mode)
-}
-
-fn write_root_file(path: &Path, contents: &[u8], mode: u32) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("destination has no parent"))?;
-    fs::create_dir_all(parent)?;
-    reject_symlink(parent)?;
-    let temporary = parent.join(format!(
-        ".{}.install.tmp",
-        path.file_name().unwrap().to_string_lossy()
-    ));
-    let _ = fs::remove_file(&temporary);
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(mode)
-        .open(&temporary)?;
-    file.write_all(contents)?;
-    file.sync_all()?;
-    fs::set_permissions(&temporary, fs::Permissions::from_mode(mode))?;
-    fs::rename(&temporary, path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
     Ok(())
 }
 

@@ -1,0 +1,102 @@
+    Checking openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+error: constant `COMMENT` is never used
+ --> crates/manager-core/src/network_windows_dns_policy.rs:9:18
+  |
+9 | pub(crate) const COMMENT: &str = "openfortivpn-manager scoped-dns v1";
+  |                  ^^^^^^^
+  |
+  = note: `-D dead-code` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: function `recovery` is never used
+  --> crates/manager-core/src/network_windows_dns_policy.rs:10:15
+   |
+10 | pub(crate) fn recovery() -> ControlError {
+   |               ^^^^^^^^
+
+error: function `conflict` is never used
+  --> crates/manager-core/src/network_windows_dns_policy.rs:13:4
+   |
+13 | fn conflict() -> ControlError {
+   |    ^^^^^^^^
+
+error: struct `Desired` is never constructed
+  --> crates/manager-core/src/network_windows_dns_policy.rs:18:19
+   |
+18 | pub(crate) struct Desired {
+   |                   ^^^^^^^
+
+error: function `domain` is never used
+  --> crates/manager-core/src/network_windows_dns_policy.rs:25:4
+   |
+25 | fn domain(value: &str) -> bool {
+   |    ^^^^^^
+
+error: function `desired` is never used
+  --> crates/manager-core/src/network_windows_dns_policy.rs:31:15
+   |
+31 | pub(crate) fn desired(dns: &Dns, luid: u64) -> Result<Desired, ControlError> {
+   |               ^^^^^^^
+
+error: struct `Rule` is never constructed
+  --> crates/manager-core/src/network_windows_dns_policy.rs:50:19
+   |
+50 | pub(crate) struct Rule {
+   |                   ^^^^
+
+error: struct `Policy` is never constructed
+  --> crates/manager-core/src/network_windows_dns_policy.rs:63:19
+   |
+63 | pub(crate) struct Policy {
+   |                   ^^^^^^
+
+error: function `overlap` is never used
+  --> crates/manager-core/src/network_windows_dns_policy.rs:67:4
+   |
+67 | fn overlap(namespace: &str, requested: &str) -> bool {
+   |    ^^^^^^^
+
+error: function `overlaps` is never used
+  --> crates/manager-core/src/network_windows_dns_policy.rs:74:4
+   |
+74 | fn overlaps(rule: &Rule, wanted: &Desired) -> bool {
+   |    ^^^^^^^^
+
+error: function `same_values` is never used
+  --> crates/manager-core/src/network_windows_dns_policy.rs:77:4
+   |
+77 | fn same_values(a: &[String], b: &[String]) -> bool {
+   |    ^^^^^^^^^^^
+
+error: function `properties` is never used
+  --> crates/manager-core/src/network_windows_dns_policy.rs:80:4
+   |
+80 | fn properties(rule: &Rule) -> Result<BTreeMap<String, Value>, ControlError> {
+   |    ^^^^^^^^^^
+
+error: function `validate_owned` is never used
+  --> crates/manager-core/src/network_windows_dns_policy.rs:86:4
+   |
+86 | fn validate_owned(rule: &Rule, wanted: &Desired) -> Result<(), ControlError> {
+   |    ^^^^^^^^^^^^^^
+
+error: function `fingerprint` is never used
+  --> crates/manager-core/src/network_windows_dns_policy.rs:97:15
+   |
+97 | pub(crate) fn fingerprint(rule: &Rule, luid: u64) -> Result<String, ControlError> {
+   |               ^^^^^^^^^^^
+
+error: function `expected_hash` is never used
+   --> crates/manager-core/src/network_windows_dns_policy.rs:101:15
+    |
+101 | pub(crate) fn expected_hash(value: &str, luid: u64) -> Result<&str, ControlError> {
+    |               ^^^^^^^^^^^^^
+
+error: function `inspect` is never used
+   --> crates/manager-core/src/network_windows_dns_policy.rs:107:15
+    |
+107 | pub(crate) fn inspect<'a>(policy: &'a Policy, wanted: &Desired) -> Result<Option<&'a Rule>, ControlError> {
+    |               ^^^^^^^
+
+error: could not compile `openfortivpn-manager-core` (lib) due to 16 previous errors
+warning: build failed, waiting for other jobs to finish...

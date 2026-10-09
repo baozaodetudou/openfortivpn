@@ -1,0 +1,2 @@
+# Preserve raw validation output while keeping source whitespace checks enabled.
+.codex-tasks/reliability-control-plane/evidence/**/*.log -whitespace

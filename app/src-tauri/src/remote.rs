@@ -1,7 +1,6 @@
 use super::{
-    app_data_dir, delete_profile, engine_info, list_instances, list_logs, list_profiles,
-    privilege_status, save_profile, start_profile, stop_instance, AppState, EngineInfo,
-    InstanceView, LogEvent, PrivilegeStatus, ProfileView, SaveProfileInput,
+    app_data_dir, engine_info, list_instances, list_logs, list_profiles, privilege_status_value,
+    AppState, EngineInfo, InstanceView, PrivilegeStatus, ProfileView, SaveProfileInput,
 };
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -15,7 +14,6 @@ use axum_server::Handle;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use rand::RngCore;
-use rcgen::{generate_simple_self_signed, CertifiedKey};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -28,15 +26,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use subtle::ConstantTimeEq;
 use tauri::{AppHandle, Emitter, Manager};
 
 const REMOTE_TOKEN_ACCOUNT: &str = "__remote_access_token";
 const REMOTE_CONFIG_FILE: &str = "remote-access.json";
 const REMOTE_CERT_FILE: &str = "certificate.pem";
 const REMOTE_KEY_FILE: &str = "private-key.pem";
-const REMOTE_CERT_NAMES_FILE: &str = "certificate-names.json";
 const REMOTE_PAGE: &str = include_str!("remote.html");
+const CLIENT: &str = include_str!("../../../web/remote-client.js");
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -90,10 +87,13 @@ pub(crate) struct RemoteAccessError {
 }
 
 struct RemoteRuntime {
+    token: Arc<openfortivpn_manager_http::AccessToken>,
     handle: Handle<SocketAddr>,
     thread: Option<JoinHandle<()>>,
     running: Arc<AtomicBool>,
 }
+
+static REMOTE_ADMIN: Mutex<()> = Mutex::new(());
 
 static REMOTE_RUNTIME: OnceLock<Mutex<Option<RemoteRuntime>>> = OnceLock::new();
 static REMOTE_TOKEN_CONFIGURED: AtomicBool = AtomicBool::new(false);
@@ -105,7 +105,15 @@ fn runtime_slot() -> &'static Mutex<Option<RemoteRuntime>> {
 fn remote_directory(app: &AppHandle) -> Result<PathBuf, String> {
     let directory = app_data_dir(app)?.join("remote-access");
     fs::create_dir_all(&directory).map_err(|error| format!("无法创建远程访问目录：{error}"))?;
+    // Reject links before tightening permissions; chmod on a link would alter
+    // an unrelated directory and reading it could expose a private key.
+    let metadata = fs::symlink_metadata(&directory).map_err(|_| "无法检查远程访问目录")?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("远程访问目录不能是符号链接".into());
+    }
     set_private_permissions(&directory, true)?;
+    openfortivpn_manager_core::private_file::verify_directory(&directory)
+        .map_err(|_| "远程访问目录权限不安全")?;
     Ok(directory)
 }
 
@@ -131,7 +139,8 @@ fn persist_settings(app: &AppHandle, settings: &RemoteAccessSettings) -> Result<
     let path = settings_path(app)?;
     let contents = serde_json::to_string_pretty(settings)
         .map_err(|error| format!("无法序列化远程访问配置：{error}"))?;
-    fs::write(&path, contents).map_err(|error| format!("无法保存远程访问配置：{error}"))?;
+    openfortivpn_manager_core::atomic_file::write_private(&path, contents.as_bytes())
+        .map_err(|error| format!("无法保存远程访问配置：{error}"))?;
     set_private_permissions(&path, false)
 }
 
@@ -213,10 +222,7 @@ fn certificate_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
     ))
 }
 
-fn certificate_names_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(remote_directory(app)?.join(REMOTE_CERT_NAMES_FILE))
-}
-
+#[cfg(test)]
 fn certificate_names(settings: &RemoteAccessSettings) -> Vec<String> {
     let mut names = vec![
         "localhost".to_string(),
@@ -231,59 +237,13 @@ fn certificate_names(settings: &RemoteAccessSettings) -> Vec<String> {
     names
 }
 
-fn write_private_file(path: &FilePath, contents: impl AsRef<[u8]>) -> Result<(), String> {
-    let temporary = path.with_file_name(format!(
-        ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("private-file"),
-        rand::random::<u64>()
-    ));
-    fs::write(&temporary, contents)
-        .map_err(|error| format!("无法写入临时文件 {}：{error}", temporary.display()))?;
-    set_private_permissions(&temporary, false)?;
-    #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(path)
-            .map_err(|error| format!("无法替换私有文件 {}：{error}", path.display()))?;
-    }
-    if let Err(error) = fs::rename(&temporary, path) {
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("无法原子更新私有文件 {}：{error}", path.display()));
-    }
-    Ok(())
-}
-
 fn ensure_certificate(
     app: &AppHandle,
     settings: &RemoteAccessSettings,
 ) -> Result<(PathBuf, PathBuf), String> {
-    let (cert_path, key_path) = certificate_paths(app)?;
-    let names_path = certificate_names_path(app)?;
-    let names = certificate_names(settings);
-    let stored_names = fs::read_to_string(&names_path)
-        .ok()
-        .and_then(|contents| serde_json::from_str::<Vec<String>>(&contents).ok());
-    if cert_path.exists() && key_path.exists() && stored_names.as_ref() == Some(&names) {
-        set_private_permissions(&cert_path, false)?;
-        set_private_permissions(&key_path, false)?;
-        set_private_permissions(&names_path, false)?;
-        return Ok((cert_path, key_path));
-    }
-
-    let CertifiedKey { cert, signing_key } = generate_simple_self_signed(names.clone())
-        .map_err(|error| format!("无法生成 HTTPS 证书：{error}"))?;
-    // The metadata file is the commit marker. If the app stops between these
-    // writes, the next launch regenerates the complete matching set.
-    let _ = fs::remove_file(&names_path);
-    write_private_file(&key_path, signing_key.serialize_pem())?;
-    write_private_file(&cert_path, cert.pem())?;
-    write_private_file(
-        &names_path,
-        serde_json::to_string_pretty(&names)
-            .map_err(|error| format!("无法序列化 HTTPS 证书名称：{error}"))?,
-    )?;
-    Ok((cert_path, key_path))
+    openfortivpn_manager_core::tls_identity::TlsIdentityStore::new(remote_directory(app)?)
+        .ensure(&settings.bind_address)
+        .map_err(|error| format!("无法准备 HTTPS 证书与私钥：{error}"))
 }
 
 fn certificate_fingerprint(app: &AppHandle) -> Result<String, String> {
@@ -305,59 +265,91 @@ fn certificate_fingerprint(app: &AppHandle) -> Result<String, String> {
 #[derive(Clone)]
 struct WebState {
     app: AppHandle,
-    token: Arc<String>,
+    token: Arc<openfortivpn_manager_http::AccessToken>,
 }
 
-#[derive(Debug)]
-struct ApiError {
-    status: StatusCode,
-    message: String,
+#[cfg(test)]
+use openfortivpn_manager_http::authorize;
+use openfortivpn_manager_http::ApiError;
+
+#[derive(Clone, Copy)]
+enum ProfileOperation {
+    Edit,
+    Start,
+    StopOrDelete,
 }
 
-impl ApiError {
-    fn unauthorized() -> Self {
-        Self {
-            status: StatusCode::UNAUTHORIZED,
-            message: "访问令牌无效".to_string(),
+fn preflight_profile(
+    app: &AppHandle,
+    profile_id: &str,
+    operation: ProfileOperation,
+) -> Result<(), ApiError> {
+    let state = app.state::<AppState>();
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| ApiError::from_message("内部运行状态已损坏".into()))?;
+    if !matches!(operation, ProfileOperation::StopOrDelete) && store.repository_recovery_required {
+        return Err(super::repository_api_error());
+    }
+    if !matches!(operation, ProfileOperation::Edit) && !store.profiles.contains_key(profile_id) {
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "PROFILE_NOT_FOUND",
+            "找不到指定配置",
+            false,
+        ));
+    }
+    if store.mutating_profiles.contains(profile_id)
+        || (matches!(operation, ProfileOperation::Edit)
+            && super::profile_connection_in_progress(&store, profile_id))
+    {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "PROFILE_BUSY",
+            "配置正在运行或修改，请稍后重试",
+            true,
+        ));
+    }
+    if matches!(operation, ProfileOperation::Start) {
+        if state
+            .shutting_down
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SHUTTING_DOWN",
+                "应用正在关闭",
+                true,
+            ));
+        }
+        if store.starting_profiles.iter().any(|id| id != profile_id)
+            || store.instances.values().any(|i| {
+                i.view.profile_id != profile_id
+                    && (i.process_running || i.lifecycle.cleanup_failed())
+            })
+        {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "NETWORK_CONFLICT",
+                "网络资源由另一个配置持有，请先断开",
+                true,
+            ));
+        }
+        if store.instances.values().any(|i| {
+            i.view.profile_id == profile_id
+                && (i.lifecycle.cleanup_failed()
+                    || (i.process_running && i.view.status == "disconnecting"))
+        }) {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "PROFILE_BUSY",
+                "连接正在停止或等待恢复",
+                true,
+            ));
         }
     }
-
-    fn from_message(message: String) -> Self {
-        let status = if message.contains("找不到") {
-            StatusCode::NOT_FOUND
-        } else if message.contains("正在")
-            || message.contains("已有连接")
-            || message.contains("请先")
-        {
-            StatusCode::CONFLICT
-        } else {
-            StatusCode::BAD_REQUEST
-        };
-        Self { status, message }
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (self.status, Json(json!({ "error": self.message }))).into_response()
-    }
-}
-
-fn authorize(headers: &HeaderMap, expected: &str) -> Result<(), ApiError> {
-    let Some(value) = headers.get(header::AUTHORIZATION) else {
-        return Err(ApiError::unauthorized());
-    };
-    let Ok(value) = value.to_str() else {
-        return Err(ApiError::unauthorized());
-    };
-    let Some(candidate) = value.strip_prefix("Bearer ") else {
-        return Err(ApiError::unauthorized());
-    };
-    if candidate.as_bytes().ct_eq(expected.as_bytes()).into() {
-        Ok(())
-    } else {
-        Err(ApiError::unauthorized())
-    }
+    Ok(())
 }
 
 async fn security_headers(request: Request<Body>, next: Next) -> Response {
@@ -376,7 +368,7 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
+            "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'",
         ),
     );
     response
@@ -384,6 +376,25 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
 
 async fn index() -> Html<&'static str> {
     Html(REMOTE_PAGE)
+}
+
+async fn client() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        CLIENT,
+    )
+}
+
+async fn capabilities(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+) -> Result<Json<openfortivpn_manager_core::domain::Capabilities>, ApiError> {
+    state.token.authorize(&headers)?;
+    let capabilities = openfortivpn_manager_core::domain::Capabilities {
+        privilege_setup: cfg!(unix),
+        ..Default::default()
+    };
+    Ok(Json(capabilities))
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -400,7 +411,7 @@ async fn health() -> Json<serde_json::Value> {
 struct Snapshot {
     profiles: Vec<ProfileView>,
     instances: Vec<InstanceView>,
-    logs: Vec<LogEvent>,
+    logs: openfortivpn_manager_core::domain::LogSnapshot,
     engine: EngineInfo,
     privilege: PrivilegeStatus,
 }
@@ -409,7 +420,7 @@ async fn snapshot(
     State(state): State<WebState>,
     headers: HeaderMap,
 ) -> Result<Json<Snapshot>, ApiError> {
-    authorize(&headers, &state.token)?;
+    state.token.authorize(&headers)?;
     let profiles = list_profiles(state.app.state()).map_err(ApiError::from_message)?;
     let instances = list_instances(state.app.state()).map_err(ApiError::from_message)?;
     let logs = list_logs(state.app.state(), None, Some(400)).map_err(ApiError::from_message)?;
@@ -418,7 +429,14 @@ async fn snapshot(
         instances,
         logs,
         engine: engine_info(state.app.clone()),
-        privilege: privilege_status(state.app),
+        privilege: privilege_status_value(
+            &state.app,
+            state
+                .app
+                .state::<AppState>()
+                .privilege_ready
+                .load(std::sync::atomic::Ordering::SeqCst),
+        ),
     }))
 }
 
@@ -426,7 +444,7 @@ async fn profiles(
     State(state): State<WebState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<ProfileView>>, ApiError> {
-    authorize(&headers, &state.token)?;
+    state.token.authorize(&headers)?;
     list_profiles(state.app.state())
         .map(Json)
         .map_err(ApiError::from_message)
@@ -436,7 +454,7 @@ async fn instances(
     State(state): State<WebState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<InstanceView>>, ApiError> {
-    authorize(&headers, &state.token)?;
+    state.token.authorize(&headers)?;
     list_instances(state.app.state())
         .map(Json)
         .map_err(ApiError::from_message)
@@ -453,22 +471,44 @@ async fn logs(
     State(state): State<WebState>,
     headers: HeaderMap,
     Query(query): Query<LogsQuery>,
-) -> Result<Json<Vec<LogEvent>>, ApiError> {
-    authorize(&headers, &state.token)?;
-    list_logs(state.app.state(), query.instance_id, query.limit)
-        .map(Json)
-        .map_err(ApiError::from_message)
+) -> Result<axum::response::Response, ApiError> {
+    state.token.authorize(&headers)?;
+    let logs = list_logs(state.app.state(), query.instance_id, query.limit)
+        .map_err(ApiError::from_message)?;
+    openfortivpn_manager_http::logs_response(logs)
 }
 
 async fn save_profile_api(
     State(state): State<WebState>,
     headers: HeaderMap,
-    Json(input): Json<SaveProfileInput>,
+    Json(mut input): Json<SaveProfileInput>,
 ) -> Result<Json<ProfileView>, ApiError> {
-    authorize(&headers, &state.token)?;
-    save_profile(state.app, input)
-        .map(Json)
-        .map_err(ApiError::from_message)
+    state.token.authorize(&headers)?;
+    if input.profile.id.trim().is_empty() {
+        input.profile.id = uuid::Uuid::new_v4().to_string();
+    }
+    super::validate_profile(&input.profile).map_err(|message| {
+        ApiError::new(StatusCode::BAD_REQUEST, "INVALID_INPUT", message, false)
+    })?;
+    if let Some(password) = &input.password {
+        super::validate_password(password).map_err(|message| {
+            ApiError::new(StatusCode::BAD_REQUEST, "INVALID_INPUT", message, false)
+        })?;
+    }
+    if input.profile.auto_connect && !input.remember_password {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "INVALID_INPUT",
+            "自动连接需要保存密码",
+            false,
+        ));
+    }
+    super::run_profile_command(state.app, input.profile.id.clone(), move |app| {
+        preflight_profile(&app, &input.profile.id, ProfileOperation::Edit)?;
+        super::save_profile_service(app, input)
+    })
+    .await
+    .map(Json)
 }
 
 async fn connect_profile(
@@ -476,20 +516,14 @@ async fn connect_profile(
     headers: HeaderMap,
     Path(profile_id): Path<String>,
 ) -> Result<Json<InstanceView>, ApiError> {
-    authorize(&headers, &state.token)?;
-    start_profile(state.app, profile_id)
-        .map(Json)
-        .map_err(ApiError::from_message)
-}
-
-fn current_profile_instance(
-    app: &AppHandle,
-    profile_id: &str,
-) -> Result<Option<InstanceView>, ApiError> {
-    let instances = list_instances(app.state()).map_err(ApiError::from_message)?;
-    Ok(instances
-        .into_iter()
-        .find(|instance| instance.profile_id == profile_id))
+    state.token.authorize(&headers)?;
+    super::run_profile_command(state.app, profile_id.clone(), move |app| {
+        preflight_profile(&app, &profile_id, ProfileOperation::Start)?;
+        super::start_profile_impl(app, profile_id, super::StartOrigin::User)
+            .map_err(ApiError::from_message)
+    })
+    .await
+    .map(Json)
 }
 
 async fn disconnect_profile(
@@ -497,16 +531,12 @@ async fn disconnect_profile(
     headers: HeaderMap,
     Path(profile_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    authorize(&headers, &state.token)?;
-    if let Some(instance) = current_profile_instance(&state.app, &profile_id)? {
-        stop_instance(
-            state.app.clone(),
-            state.app.state::<AppState>(),
-            instance.id,
-            Some(profile_id),
-        )
-        .map_err(ApiError::from_message)?;
-    }
+    state.token.authorize(&headers)?;
+    super::run_profile_command(state.app, profile_id.clone(), move |app| {
+        preflight_profile(&app, &profile_id, ProfileOperation::StopOrDelete)?;
+        super::disconnect_profile_impl(app, profile_id).map_err(ApiError::from_message)
+    })
+    .await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -515,28 +545,13 @@ async fn reconnect_profile(
     headers: HeaderMap,
     Path(profile_id): Path<String>,
 ) -> Result<Json<InstanceView>, ApiError> {
-    authorize(&headers, &state.token)?;
-    if let Some(instance) = current_profile_instance(&state.app, &profile_id)? {
-        stop_instance(
-            state.app.clone(),
-            state.app.state::<AppState>(),
-            instance.id,
-            Some(profile_id.clone()),
-        )
-        .map_err(ApiError::from_message)?;
-        for _ in 0..60 {
-            if !super::profile_has_active_instance(&state.app, &profile_id) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-        if super::profile_has_active_instance(&state.app, &profile_id) {
-            return Err(ApiError::from_message("等待旧连接断开超时".to_string()));
-        }
-    }
-    start_profile(state.app, profile_id)
-        .map(Json)
-        .map_err(ApiError::from_message)
+    state.token.authorize(&headers)?;
+    super::run_profile_command(state.app, profile_id.clone(), move |app| {
+        preflight_profile(&app, &profile_id, ProfileOperation::StopOrDelete)?;
+        super::reconnect_profile_impl(app, profile_id).map_err(ApiError::from_message)
+    })
+    .await
+    .map(Json)
 }
 
 async fn delete_profile_api(
@@ -544,16 +559,23 @@ async fn delete_profile_api(
     headers: HeaderMap,
     Path(profile_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    authorize(&headers, &state.token)?;
-    delete_profile(state.app, profile_id).map_err(ApiError::from_message)?;
+    state.token.authorize(&headers)?;
+    super::run_profile_command(state.app, profile_id.clone(), move |app| {
+        preflight_profile(&app, &profile_id, ProfileOperation::StopOrDelete)?;
+        super::delete_profile_service(app, profile_id, None, true)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 fn web_router(state: WebState) -> Router {
+    let v2 = openfortivpn_manager_http::v2::router(Arc::new(state.clone()));
     Router::new()
         .route("/", get(index))
+        .route("/remote-client.js", get(client))
         .route("/health", get(health))
         .route("/api/v1/snapshot", get(snapshot))
+        .route("/api/v1/capabilities", get(capabilities))
         .route("/api/v1/profiles", get(profiles).post(save_profile_api))
         .route("/api/v1/instances", get(instances))
         .route("/api/v1/logs", get(logs))
@@ -571,8 +593,118 @@ fn web_router(state: WebState) -> Router {
         )
         .route("/api/v1/profiles/{profile_id}", delete(delete_profile_api))
         .layer(DefaultBodyLimit::max(64 * 1024))
-        .layer(middleware::from_fn(security_headers))
         .with_state(state)
+        .nest("/api/v2", v2)
+        .layer(middleware::from_fn(security_headers))
+}
+
+impl openfortivpn_manager_http::v2::ControlService for WebState {
+    fn capabilities(&self) -> openfortivpn_manager_core::domain::Capabilities {
+        openfortivpn_manager_core::domain::Capabilities {
+            privilege_setup: cfg!(unix),
+            ..Default::default()
+        }
+    }
+    fn authorize(&self, headers: &HeaderMap) -> Result<(), ApiError> {
+        self.token.authorize(headers)
+    }
+    async fn snapshot(&self) -> Result<serde_json::Value, ApiError> {
+        let app = self.app.clone();
+        tokio::task::spawn_blocking(move || {
+            let profiles = list_profiles(app.state()).map_err(ApiError::from_message)?;
+            let instances = list_instances(app.state()).map_err(ApiError::from_message)?;
+            let logs = list_logs(app.state(), None, Some(400)).map_err(ApiError::from_message)?;
+            let recovery = super::list_recovery_records(app.clone()).map_err(ApiError::from_message)?;
+            Ok(json!({"profiles":profiles,"instances":instances,"logs":logs,"runJournal":recovery,"engine":engine_info(app.clone()),"privilege":privilege_status_value(&app, app.state::<AppState>().privilege_ready.load(Ordering::SeqCst))}))
+        }).await.map_err(|e| ApiError::from_message(e.to_string()))?
+    }
+    async fn save(
+        &self,
+        mut input: openfortivpn_manager_core::domain::SaveProfileInput,
+    ) -> Result<serde_json::Value, ApiError> {
+        super::run_profile_command(self.app.clone(), input.profile.id.clone(), move |app| {
+            super::validate_profile(&input.profile).map_err(|message| {
+                ApiError::new(StatusCode::BAD_REQUEST, "INVALID_INPUT", message, false)
+            })?;
+            if let Some(password) = &input.password {
+                super::validate_password(password).map_err(|message| {
+                    ApiError::new(StatusCode::BAD_REQUEST, "INVALID_INPUT", message, false)
+                })?;
+            }
+            preflight_profile(&app, &input.profile.id, ProfileOperation::Edit)?;
+            let view = super::save_profile_service(
+                app,
+                SaveProfileInput {
+                    profile: input.profile.clone(),
+                    password: input.password.take(),
+                    remember_password: input.remember_password,
+                    expected_revision: input.expected_revision,
+                },
+            )?;
+            serde_json::to_value(view).map_err(|e| ApiError::from_message(e.to_string()))
+        })
+        .await
+    }
+    async fn execute(
+        &self,
+        profile: String,
+        action: openfortivpn_manager_http::v2::Action,
+    ) -> Result<serde_json::Value, ApiError> {
+        use openfortivpn_manager_http::v2::Action;
+        super::run_profile_command(self.app.clone(), profile.clone(), move |app| {
+            preflight_profile(
+                &app,
+                &profile,
+                if action == Action::Connect {
+                    ProfileOperation::Start
+                } else {
+                    ProfileOperation::StopOrDelete
+                },
+            )?;
+            if action != Action::Connect {
+                super::disconnect_profile_impl(app.clone(), profile.clone())
+                    .map_err(ApiError::from_message)?;
+                super::wait_for_profile_to_stop(&app, &profile).map_err(ApiError::from_message)?;
+            }
+            if action == Action::Disconnect {
+                return Ok(json!({"disconnected":true}));
+            }
+            let instance = super::start_profile_impl(app, profile, super::StartOrigin::User)
+                .map_err(ApiError::from_message)?;
+            serde_json::to_value(instance).map_err(|e| ApiError::from_message(e.to_string()))
+        })
+        .await
+    }
+    async fn delete(
+        &self,
+        profile: String,
+        expected_revision: u64,
+        stop_first: bool,
+    ) -> Result<(), ApiError> {
+        super::run_profile_command(self.app.clone(), profile.clone(), move |app| {
+            preflight_profile(&app, &profile, ProfileOperation::StopOrDelete)?;
+            super::delete_profile_service(app, profile, Some(expected_revision), stop_first)
+        })
+        .await
+    }
+    async fn logs(&self) -> Result<openfortivpn_manager_core::domain::LogSnapshot, ApiError> {
+        list_logs(self.app.state(), None, Some(2000)).map_err(ApiError::from_message)
+    }
+    async fn authentication_challenges(
+        &self,
+    ) -> Result<Vec<openfortivpn_manager_core::control::Challenge>, ApiError> {
+        super::authentication::authentication_challenges(self.app.state())
+            .map_err(ApiError::from_message)
+    }
+    async fn respond_to_authentication(
+        &self,
+        response: openfortivpn_manager_core::control::AuthResponse,
+    ) -> Result<(), ApiError> {
+        super::run_profile_command(self.app.clone(), response.profile_id.clone(), move |app| {
+            super::authentication::respond(app, response)
+        })
+        .await
+    }
 }
 
 fn stop_running_server() -> Result<(), String> {
@@ -594,6 +726,7 @@ fn stop_running_server() -> Result<(), String> {
 }
 
 pub(crate) fn shutdown() -> Result<(), String> {
+    let _admin = REMOTE_ADMIN.lock().map_err(|_| "远程访问管理状态已损坏")?;
     stop_running_server()
 }
 
@@ -614,6 +747,8 @@ fn start_server(
     let thread_handle = handle.clone();
     let running = Arc::new(AtomicBool::new(true));
     let thread_running = running.clone();
+    let token = Arc::new(openfortivpn_manager_http::AccessToken::new(token));
+    let server_token = token.clone();
     let server_app = app.clone();
     let thread = thread::spawn(move || {
         let web_app = server_app.clone();
@@ -633,7 +768,7 @@ fn start_server(
                         .serve(
                             web_router(WebState {
                                 app: web_app,
-                                token: Arc::new(token),
+                                token: server_token,
                             })
                             .into_make_service(),
                         )
@@ -650,6 +785,7 @@ fn start_server(
     *runtime_slot()
         .lock()
         .map_err(|_| "远程访问运行状态已损坏".to_string())? = Some(RemoteRuntime {
+        token,
         handle,
         thread: Some(thread),
         running,
@@ -696,6 +832,7 @@ fn make_status(
 }
 
 pub(crate) fn initialize(app: AppHandle) -> Result<(), String> {
+    let _admin = REMOTE_ADMIN.lock().map_err(|_| "远程访问管理状态已损坏")?;
     let settings = load_settings(&app)?;
     if settings.enabled {
         let (token, _) = ensure_remote_token()?;
@@ -714,6 +851,7 @@ pub(crate) fn configure_remote_access(
     app: AppHandle,
     input: ConfigureRemoteAccessInput,
 ) -> Result<RemoteAccessUpdate, String> {
+    let _admin = REMOTE_ADMIN.lock().map_err(|_| "远程访问管理状态已损坏")?;
     let settings = RemoteAccessSettings {
         enabled: input.enabled,
         bind_address: input.bind_address.trim().to_string(),
@@ -765,20 +903,21 @@ pub(crate) fn configure_remote_access(
 
 #[tauri::command]
 pub(crate) fn rotate_remote_access_token(app: AppHandle) -> Result<RemoteAccessUpdate, String> {
+    let _admin = REMOTE_ADMIN.lock().map_err(|_| "远程访问管理状态已损坏")?;
     let settings = load_settings(&app)?;
-    let previous_token = read_remote_token()?;
     let token = generate_remote_token();
+    // Persist first; a failed credential write must keep the old token valid.
     store_remote_token(&token)?;
-    if settings.enabled {
-        if let Err(message) = start_server(app.clone(), &settings, token.clone()) {
-            if let Some(previous_token) = previous_token {
-                store_remote_token(&previous_token)?;
-                start_server(app.clone(), &settings, previous_token)
-                    .map_err(|rollback| format!("{message}；恢复旧令牌和服务失败：{rollback}"))?;
-            }
-            return Err(message);
-        }
+    let runtime = runtime_slot()
+        .lock()
+        .map_err(|_| "远程访问运行状态已损坏")?;
+    if let Some(runtime) = runtime.as_ref() {
+        runtime
+            .token
+            .replace(token.clone())
+            .map_err(|_| "无法更新运行中的访问令牌")?;
     }
+    drop(runtime);
     Ok(RemoteAccessUpdate {
         status: make_status(&app, settings)?,
         token: Some(token),

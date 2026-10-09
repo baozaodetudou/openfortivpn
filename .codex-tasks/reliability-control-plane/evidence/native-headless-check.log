@@ -1,0 +1,35 @@
+    Updating crates.io index
+     Locking 29 packages to latest compatible versions
+      Adding async-broadcast v0.7.2
+      Adding async-recursion v1.2.0
+      Adding async-trait v0.1.92
+      Adding endi v1.1.1
+      Adding enumflags2 v0.7.12
+      Adding enumflags2_derive v0.7.12
+      Adding event-listener v5.4.2
+      Adding event-listener-strategy v0.5.4
+      Adding futures-io v0.3.34
+      Adding futures-lite v2.6.1
+      Adding hex v0.4.3
+      Adding memoffset v0.9.1
+      Adding ordered-stream v0.2.0
+      Adding parking v2.2.1
+      Adding proc-macro-crate v3.5.0
+      Adding serde_repr v0.1.21
+      Adding toml_datetime v1.1.2+spec-1.1.0
+      Adding toml_edit v0.25.17+spec-1.1.0
+      Adding toml_parser v1.1.5+spec-1.1.0
+      Adding tracing-attributes v0.1.31
+      Adding uds_windows v1.2.1
+      Adding winnow v1.0.4
+      Adding zbus v5.19.0
+      Adding zbus_macros v5.19.0
+      Adding zbus_names v4.3.4
+      Adding zcheapstr v1.1.0
+      Adding zvariant v5.15.0
+      Adding zvariant_derive v5.15.0
+      Adding zvariant_utils v4.2.0
+    Checking openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+    Checking openfortivpn-manager-http v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-http)
+    Checking openfortivpn-manager-headless v0.1.6 (/Users/doumao/code/github/openfortivpn/headless)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.03s

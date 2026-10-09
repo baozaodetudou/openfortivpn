@@ -1,0 +1,25 @@
+    Blocking waiting for file lock on build directory
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.49s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-70e5e0f501493d17)
+
+running 16 tests
+test network_macos_routes::tests::scoped_routes_do_not_authorize_global_route_deletion_and_metrics_are_explicit ... ok
+test network_macos_routes::tests::codec_uses_darwin_abi_and_validates_all_sockaddr_boundaries ... ok
+test network_macos_routes::tests::interface_change_after_ack_requires_recovery ... ok
+test network_macos_routes::tests::sequence_identity_is_unique_across_provider_instances ... ok
+test network_macos_routes::tests::reply_matching_ignores_other_sequences_and_rejects_malformed_or_missing_ack ... ok
+test network_macos_routes::tests::native_interface_epoch_includes_seconds_and_microseconds ... ok
+test network_macos_routes::tests::apply_failures_after_send_retain_uncertainty_and_do_not_guess_cleanup ... ok
+test network_macos_routes::tests::masks_accept_darwin_compaction_and_reject_noncontiguous_networks ... ok
+test network_macos_routes::tests::conflicting_global_route_duplicate_and_malformed_table_fail_closed ... ok
+test network_macos_routes::tests::changed_fingerprint_or_reused_interface_never_sends_delete ... ok
+test network_macos_routes::tests::gateway_exception_host_routes_keep_ipv4_gateway_and_bound_interface ... ok
+test network_macos_routes::tests::exact_fingerprint_ignores_use_counts_and_detects_changed_route_policy ... ok
+test network_macos_routes::tests::apply_verifies_kernel_snapshot_and_delete_preserves_exact_selectors ... ok
+test network_macos_routes::tests::native_datagram_reply_loop_uses_full_pid_and_sequence_match ... ok
+test network_macos_routes::tests::native_datagram_transport_enforces_deadline_truncation_and_close_on_exec ... ok
+test network_macos_routes::tests::reply_flood_and_partial_send_do_not_trigger_mutation_retries ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 88 filtered out; finished in 0.02s
+

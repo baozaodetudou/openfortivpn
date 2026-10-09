@@ -5,10 +5,26 @@ on:
   push:
     paths:
       - 'app/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'web/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'scripts/**'
       - '.github/workflows/app.yml'
   pull_request:
     paths:
       - 'app/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'web/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'scripts/**'
       - '.github/workflows/app.yml'
   workflow_dispatch:
 
@@ -51,6 +67,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Remote client contracts
+        run: node --test ../tests/remote-client.test.mjs
+
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -70,7 +89,7 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 10
+          version: 10.24.0
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -93,7 +112,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Check Svelte and TypeScript
-        run: pnpm check
+        run: |
+          pnpm check
+          node --test ../tests/desktop-state.test.mjs
+          node --test ../tests/desktop-settings.test.mjs
 
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
@@ -105,7 +127,14 @@ jobs:
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 
       - name: Run Rust tests
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features
+        run: |
+          cargo test --locked --manifest-path ../Cargo.toml --workspace --all-features
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features
+
+      - name: Verify NRPT command serialization with isolated mock cmdlets
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python ../crates/manager-core/tests/windows_nrpt_script.py --powershell "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
 
       - name: Check privileged helper
         if: runner.os != 'Windows'

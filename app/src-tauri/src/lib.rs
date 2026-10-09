@@ -1,13 +1,16 @@
+use openfortivpn_manager_core::log_buffer::LogBuffer;
+use openfortivpn_manager_core::protocol::{Line, LineDecoder};
+use openfortivpn_manager_core::supervisor::{OwnedProcess, StreamWorker as StreamReader};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(unix)]
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::io::Read;
 #[cfg(unix)]
 use std::io::Write;
-use std::io::{BufRead, BufReader, Read};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
@@ -15,7 +18,7 @@ use std::os::unix::process::CommandExt;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -33,71 +36,122 @@ use windows_sys::Win32::System::Console::{
 use windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP;
 use zeroize::Zeroize;
 
+mod authentication;
+mod backup;
+mod profile_repository;
 mod remote;
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct VpnProfile {
-    id: String,
-    name: String,
-    host: String,
-    port: u16,
-    username: String,
-    realm: String,
-    trusted_cert: String,
-    set_routes: bool,
-    set_dns: bool,
-    pppd_use_peerdns: bool,
-    half_internet_routes: bool,
-    use_sudo: bool,
-    #[serde(default)]
-    auto_connect: bool,
-    #[serde(default = "default_auto_reconnect")]
-    auto_reconnect: bool,
+static CREDENTIAL_TRANSACTIONS: Mutex<()> = Mutex::new(());
+
+type CredentialIntent = openfortivpn_manager_core::credential_journal::Intent;
+
+#[cfg(unix)]
+type SystemNetworkLease = openfortivpn_manager_core::network_authority::ExclusiveLease;
+#[cfg(windows)]
+type SystemNetworkLease = openfortivpn_manager_core::windows_network_authority::WindowsLease;
+
+fn begin_credential_intent(app: &AppHandle, intent: &CredentialIntent) -> Result<PathBuf, String> {
+    openfortivpn_manager_core::credential_journal::begin(&app_data_dir(app)?, intent)
+        .map_err(|e| e.to_string())
 }
 
-fn default_auto_reconnect() -> bool {
-    true
+fn credential_references(loaded: &LoadedProfiles) -> HashSet<String> {
+    loaded
+        .profiles
+        .values()
+        .filter(|profile| {
+            loaded.stored_secret_profiles.contains(&profile.id)
+                || loaded.unknown_secret_profiles.contains(&profile.id)
+        })
+        .map(|profile| {
+            profile
+                .credential_ref
+                .clone()
+                .unwrap_or_else(|| profile.id.clone())
+        })
+        .collect()
+}
+fn backup_credential_references(app: &AppHandle) -> Result<HashSet<String>, String> {
+    let backup_path = app_data_dir(app)?.join(".profiles-schema0-backup.json");
+    if !backup_path.exists() {
+        return Ok(HashSet::new());
+    }
+    let bytes = openfortivpn_manager_core::private_file::read(
+        &backup_path,
+        openfortivpn_manager_core::repository::MAX_PROFILE_BYTES as u64,
+    )
+    .map_err(|e| e.to_string())?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| "迁移备份编码错误")?;
+    Ok(credential_references(&parse_profile_file(text)?))
+}
+fn credential_gc_delete(
+    app: &AppHandle,
+    reference: &str,
+) -> Result<(), openfortivpn_manager_core::ControlError> {
+    delete_stored_password(app, reference).map_err(|_| {
+        openfortivpn_manager_core::ControlError::new(
+            openfortivpn_manager_core::ErrorCode::RecoveryRequired,
+            "无法回收旧凭据，请完成配置仓库恢复",
+        )
+    })
+}
+fn collect_credential_intent(
+    app: &AppHandle,
+    path: &std::path::Path,
+    intent: &CredentialIntent,
+    loaded: &LoadedProfiles,
+) -> Result<(), String> {
+    openfortivpn_manager_core::credential_journal::collect(
+        &app_data_dir(app)?,
+        path,
+        intent,
+        &credential_references(loaded),
+        &backup_credential_references(app)?,
+        &mut |reference| credential_gc_delete(app, reference),
+    )
+    .map_err(|e| e.to_string())
+}
+fn recover_credential_intents(app: &AppHandle, loaded: &LoadedProfiles) -> Result<(), String> {
+    openfortivpn_manager_core::credential_journal::recover(
+        &app_data_dir(app)?,
+        &credential_references(loaded),
+        &backup_credential_references(app)?,
+        |reference| credential_gc_delete(app, reference),
+    )
+    .map_err(|e| e.to_string())
 }
 
-#[derive(Debug, Deserialize)]
+use openfortivpn_manager_core::domain::{
+    EngineInfo, LogEvent, PrivilegeStatus, ProfileView, VpnProfile,
+};
+type InstanceView = openfortivpn_manager_core::domain::InstanceView<String>;
+
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SaveProfileInput {
     profile: VpnProfile,
     password: Option<String>,
     #[serde(default)]
     remember_password: bool,
+    #[serde(default)]
+    expected_revision: Option<u64>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ProfileView {
-    profile: VpnProfile,
-    has_secret: bool,
-    password_stored: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InstanceView {
-    id: String,
-    profile_generation: u64,
-    profile_id: String,
-    profile_name: String,
-    adapter_name: String,
-    status: String,
-    message: String,
-    pid: u32,
-    started_at: u64,
-    ended_at: Option<u64>,
-    exit_code: Option<i32>,
-    revision: u64,
+impl Drop for SaveProfileInput {
+    fn drop(&mut self) {
+        if let Some(password) = &mut self.password {
+            password.zeroize();
+        }
+    }
 }
 
 struct ManagedInstance {
     view: InstanceView,
-    child: Arc<Mutex<Child>>,
+    source_profile: VpnProfile,
+    child: OwnedProcess,
+    input: Option<Arc<openfortivpn_manager_core::private_input::PrivateInput>>,
     process_running: bool,
+    lifecycle: openfortivpn_manager_core::lifecycle::EngineLifecycle,
     user_requested_stop: bool,
     reconnect_blocked: bool,
     failure_message: Option<String>,
@@ -119,7 +173,6 @@ struct PersistedVpnProfile {
     password_stored: Option<bool>,
 }
 
-#[cfg(unix)]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeProcessRecord {
@@ -129,6 +182,9 @@ struct RuntimeProcessRecord {
     process_group_id: u32,
     engine_path: String,
     config_path: String,
+    #[cfg(windows)]
+    #[serde(default)]
+    process_identity: Option<openfortivpn_manager_core::windows_process::WindowsProcessIdentity>,
 }
 
 #[derive(Default)]
@@ -140,11 +196,13 @@ struct RuntimeStore {
     instances: BTreeMap<String, ManagedInstance>,
     starting_profiles: HashSet<String>,
     mutating_profiles: HashSet<String>,
+    restoring_repository: bool,
+    repository_recovery_required: bool,
     reconnect_attempts: HashMap<String, u32>,
     reconnect_generations: HashMap<String, u64>,
-    logs: VecDeque<LogEvent>,
-    #[cfg(unix)]
+    logs: LogBuffer,
     stale_processes: BTreeMap<String, RuntimeProcessRecord>,
+    challenges: openfortivpn_manager_core::control::Challenges,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -180,6 +238,9 @@ struct TrayUi {
 #[derive(Default)]
 struct AppState {
     store: Mutex<RuntimeStore>,
+    repository_guard: Mutex<Option<fs::File>>,
+    commands: Arc<openfortivpn_manager_core::actor::ProfileActors>,
+    engine_cache: Mutex<Option<(Instant, PathBuf, EngineInfo)>>,
     lifecycle: Mutex<()>,
     desktop_preferences: Mutex<DesktopPreferences>,
     tray_ui: Mutex<Option<TrayUi>>,
@@ -192,28 +253,12 @@ struct AppState {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct EngineInfo {
-    platform: String,
-    path: String,
-    available: bool,
-    version: String,
-    requires_elevation: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LogEvent {
-    instance_id: String,
-    stream: String,
-    line: String,
-    timestamp: u64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct EngineEvent {
     instance_id: String,
     profile_id: String,
+    profile_revision: u64,
+    host: String,
+    port: u16,
     payload: Value,
 }
 
@@ -238,22 +283,14 @@ struct TrayActionError {
     message: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PrivilegeStatus {
-    required: bool,
-    ready: bool,
-    platform: String,
-}
-
 const KEYRING_SERVICE: &str = "com.baozaodetudou.openfortivpn";
 const TRAY_ID: &str = "openfortivpn-manager-tray";
 const TRAY_TOGGLE_WINDOW_ID: &str = "tray-toggle-window";
 const TRAY_DISCONNECT_ALL_ID: &str = "tray-disconnect-all";
 const TRAY_QUIT_ID: &str = "tray-quit";
-const MAX_RETAINED_LOGS: usize = 2_000;
+#[cfg(test)]
+const MAX_RETAINED_LOGS: usize = openfortivpn_manager_core::log_buffer::MAX_LOGS;
 const REMOTE_TOKEN_PROFILE_ID: &str = "__remote_access_token";
-const ENGINE_PASSWORD_MAX_BYTES: usize = 256;
 static CREDENTIAL_ACCESS: Mutex<()> = Mutex::new(());
 
 fn now_epoch() -> u64 {
@@ -278,9 +315,18 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .app_data_dir()
         .map_err(|error| format!("无法确定应用数据目录：{error}"))?;
     fs::create_dir_all(&path).map_err(|error| format!("无法创建应用数据目录：{error}"))?;
+    let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("应用数据目录不能是符号链接或普通文件".into());
+    }
+    #[cfg(unix)]
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err("应用数据目录不属于当前用户".into());
+    }
     #[cfg(unix)]
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
         .map_err(|error| format!("无法保护应用数据目录：{error}"))?;
+    openfortivpn_manager_core::private_file::verify_directory(&path).map_err(|e| e.to_string())?;
     Ok(path)
 }
 
@@ -377,10 +423,32 @@ fn tray_status_text(statuses: &[&str]) -> String {
 
 fn parse_profile_file(contents: &str) -> Result<LoadedProfiles, String> {
     let values: Vec<PersistedVpnProfile> =
-        serde_json::from_str(contents).map_err(|error| format!("配置列表格式错误：{error}"))?;
+        openfortivpn_manager_core::repository::decode(contents.as_bytes())
+            .map_err(|error| error.to_string())?
+            .profiles;
     let mut loaded = LoadedProfiles::default();
-    for value in values {
+    let mut references = HashSet::new();
+    for mut value in values {
+        validate_profile(&value.profile)?;
+        value.profile.trusted_cert =
+            openfortivpn_manager_core::validation::certificate_pin(&value.profile.trusted_cert)
+                .map_err(|e| e.to_string())?;
         let profile_id = value.profile.id.clone();
+        if loaded.profiles.contains_key(&profile_id) {
+            return Err("配置文件含重复 ID".into());
+        }
+        if let Some(reference) = &value.profile.credential_ref {
+            if reference != &profile_id
+                && reference
+                    .strip_prefix("credential:")
+                    .is_none_or(|id| Uuid::parse_str(id).is_err())
+            {
+                return Err("配置文件含无效凭据引用".into());
+            }
+            if !references.insert(reference.clone()) {
+                return Err("多个配置使用相同凭据引用".into());
+            }
+        }
         match value.password_stored {
             Some(true) => {
                 loaded.stored_secret_profiles.insert(profile_id.clone());
@@ -412,7 +480,9 @@ fn serialize_profile_file(
             profile,
         })
         .collect::<Vec<_>>();
-    serde_json::to_string_pretty(&values).map_err(|error| format!("无法序列化配置列表：{error}"))
+    let bytes =
+        openfortivpn_manager_core::repository::encode(values).map_err(|error| error.to_string())?;
+    String::from_utf8(bytes).map_err(|_| "配置编码失败".into())
 }
 
 fn load_profiles(app: &AppHandle) -> Result<LoadedProfiles, String> {
@@ -421,9 +491,13 @@ fn load_profiles(app: &AppHandle) -> Result<LoadedProfiles, String> {
         return Ok(LoadedProfiles::default());
     }
 
-    let contents = fs::read_to_string(&path)
-        .map_err(|error| format!("无法读取配置列表 {}：{error}", path.display()))?;
-    parse_profile_file(&contents)
+    let contents = openfortivpn_manager_core::private_file::read_metadata(
+        &path,
+        openfortivpn_manager_core::repository::MAX_PROFILE_BYTES as u64,
+    )
+    .map_err(|error| format!("无法读取配置列表 {}：{error}", path.display()))?;
+    let contents = std::str::from_utf8(&contents).map_err(|_| "配置必须是 UTF-8".to_string())?;
+    parse_profile_file(contents)
 }
 
 fn persist_profiles(
@@ -435,36 +509,131 @@ fn persist_profiles(
     let path = profiles_path(app)?;
     let contents =
         serialize_profile_file(profiles, stored_secret_profiles, unknown_secret_profiles)?;
-    #[cfg(unix)]
-    {
-        let temporary = path.with_file_name(format!(".profiles.{}.tmp", Uuid::new_v4()));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)
-            .map_err(|error| format!("无法创建临时配置列表：{error}"))?;
-        if let Err(error) = file
-            .write_all(contents.as_bytes())
-            .and_then(|()| file.sync_all())
-        {
-            let _ = fs::remove_file(&temporary);
-            return Err(format!("无法保存临时配置列表：{error}"));
-        }
-        if let Err(error) = fs::rename(&temporary, &path) {
-            let _ = fs::remove_file(&temporary);
-            return Err(format!("无法保存配置列表 {}：{error}", path.display()));
+    if path.exists() {
+        let old = openfortivpn_manager_core::private_file::read_metadata(
+            &path,
+            openfortivpn_manager_core::repository::MAX_PROFILE_BYTES as u64,
+        )
+        .map_err(|e| e.to_string())?;
+        let decoded = openfortivpn_manager_core::repository::decode::<PersistedVpnProfile>(&old)
+            .map_err(|e| e.to_string())?;
+        if decoded.legacy {
+            let backup = app_data_dir(app)?.join(".profiles-schema0-backup.json");
+            if !backup.exists() {
+                openfortivpn_manager_core::atomic_file::write_private(&backup, &old)
+                    .map_err(|e| e.to_string())?;
+            }
         }
     }
-    #[cfg(not(unix))]
-    fs::write(&path, contents)
-        .map_err(|error| format!("无法保存配置列表 {}：{error}", path.display()))?;
-
-    #[cfg(unix)]
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-        .map_err(|error| format!("无法设置配置列表权限：{error}"))?;
+    openfortivpn_manager_core::atomic_file::write_private(&path, contents.as_bytes())
+        .map_err(|error| format!("无法原子保存配置列表：{error}"))?;
 
     Ok(())
+}
+
+const REPOSITORY_RECOVERY_MESSAGE: &str =
+    "配置写入未能确认，请停止所有连接后在设置中重新读取并恢复配置仓库";
+
+fn repository_api_error() -> openfortivpn_manager_http::ApiError {
+    openfortivpn_manager_http::ApiError::new(
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        "RECOVERY_REQUIRED",
+        REPOSITORY_RECOVERY_MESSAGE,
+        false,
+    )
+}
+
+fn ensure_repository_ready(store: &RuntimeStore) -> Result<(), String> {
+    if store.repository_recovery_required {
+        Err(REPOSITORY_RECOVERY_MESSAGE.into())
+    } else {
+        Ok(())
+    }
+}
+
+// A failed replacement can already be visible on disk (e.g. parent fsync
+// fails after rename). Keep the old cache for diagnostics, but never use it as
+// the basis of another write or connection until a durable reload succeeds.
+fn commit_profile_metadata(
+    store: &mut RuntimeStore,
+    write: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    ensure_repository_ready(store)?;
+    if write().is_err() {
+        store.repository_recovery_required = true;
+        return Err(REPOSITORY_RECOVERY_MESSAGE.into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn repository_recovery_required(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(lock_store(&state)?.repository_recovery_required)
+}
+
+fn repository_is_idle(store: &RuntimeStore) -> bool {
+    !store.restoring_repository
+        && store.mutating_profiles.is_empty()
+        && store.starting_profiles.is_empty()
+        && store.stale_processes.is_empty()
+        && !store
+            .instances
+            .values()
+            .any(|i| i.process_running || i.lifecycle.cleanup_failed())
+}
+
+fn apply_recovered_profiles(store: &mut RuntimeStore, loaded: LoadedProfiles) {
+    for secret in store.secrets.values_mut() {
+        secret.zeroize();
+    }
+    store.secrets.clear();
+    store.profiles = loaded.profiles;
+    store.stored_secret_profiles = loaded.stored_secret_profiles;
+    store.unknown_secret_profiles = loaded.unknown_secret_profiles;
+    store.reconnect_attempts.clear();
+    store.reconnect_generations.clear();
+    store.instances.clear();
+    store.repository_recovery_required = false;
+}
+
+#[tauri::command]
+async fn recover_profile_repository(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        {
+            let state = app.state::<AppState>();
+            let mut store = lock_store(&state)?;
+            if !repository_is_idle(&store) {
+                return Err("请先停止所有连接并完成正在进行的操作与进程恢复".into());
+            }
+            store.restoring_repository = true;
+        }
+        let _guard = backup::RestoreGuard(app.clone());
+        let _transaction = CREDENTIAL_TRANSACTIONS
+            .lock()
+            .map_err(|_| "凭据事务不可用")?;
+        let loaded = load_profiles(&app)?;
+        // Retry the durability barrier before collecting either credential ref.
+        let path = profiles_path(&app)?;
+        if path.exists() {
+            fs::File::open(&path)
+                .and_then(|file| file.sync_all())
+                .map_err(|_| REPOSITORY_RECOVERY_MESSAGE)?;
+        }
+        #[cfg(unix)]
+        fs::File::open(app_data_dir(&app)?)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| REPOSITORY_RECOVERY_MESSAGE)?;
+        recover_credential_intents(&app, &loaded)?;
+        {
+            let state = app.state::<AppState>();
+            let mut store = lock_store(&state)?;
+            apply_recovered_profiles(&mut store, loaded);
+        }
+        emit_profiles_changed(&app);
+        Ok(())
+    })
+    .await
+    .map_err(|_| "配置恢复工作线程失败".to_string())?
 }
 
 fn credential_entry(profile_id: &str) -> Result<keyring::Entry, String> {
@@ -503,9 +672,32 @@ fn delete_keychain_password(profile_id: &str) -> Result<(), String> {
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
-fn load_local_credentials_file(path: &std::path::Path) -> Result<BTreeMap<String, String>, String> {
+struct LocalCredentials(BTreeMap<String, String>);
+#[cfg(any(target_os = "macos", all(test, unix)))]
+impl std::ops::Deref for LocalCredentials {
+    type Target = BTreeMap<String, String>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+#[cfg(any(target_os = "macos", all(test, unix)))]
+impl std::ops::DerefMut for LocalCredentials {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+#[cfg(any(target_os = "macos", all(test, unix)))]
+impl Drop for LocalCredentials {
+    fn drop(&mut self) {
+        for secret in self.0.values_mut() {
+            secret.zeroize();
+        }
+    }
+}
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn load_local_credentials_file(path: &std::path::Path) -> Result<LocalCredentials, String> {
     if !path.exists() {
-        return Ok(BTreeMap::new());
+        return Ok(LocalCredentials(BTreeMap::new()));
     }
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("无法检查本机凭据文件 {}：{error}", path.display()))?;
@@ -516,11 +708,15 @@ fn load_local_credentials_file(path: &std::path::Path) -> Result<BTreeMap<String
     {
         return Err("本机凭据文件必须由当前用户拥有、使用 0600 且不能是符号链接".to_string());
     }
-    let contents = fs::read_to_string(path)
-        .map_err(|error| format!("无法读取本机凭据文件 {}：{error}", path.display()))?;
-    let credentials: BTreeMap<String, String> = serde_json::from_str(&contents)
-        .map_err(|error| format!("本机凭据文件格式错误：{error}"))?;
-    for (profile_id, password) in &credentials {
+    let contents = zeroize::Zeroizing::new(
+        openfortivpn_manager_core::private_file::read(path, 16 * 1024 * 1024)
+            .map_err(|error| format!("无法读取本机凭据文件 {}：{error}", path.display()))?,
+    );
+    let credentials = LocalCredentials(
+        serde_json::from_slice(&contents)
+            .map_err(|error| format!("本机凭据文件格式错误：{error}"))?,
+    );
+    for (profile_id, password) in credentials.iter() {
         if profile_id.trim().is_empty() || profile_id == REMOTE_TOKEN_PROFILE_ID {
             return Err("本机凭据文件包含无效的配置 ID".to_string());
         }
@@ -546,27 +742,12 @@ fn persist_local_credentials_file(
             return Err("拒绝覆盖所有者、权限或文件类型异常的本机凭据文件".to_string());
         }
     }
-    let contents = serde_json::to_vec_pretty(credentials)
-        .map_err(|error| format!("无法序列化本机凭据：{error}"))?;
-    let temporary = path.with_file_name(format!(".credentials.{}.tmp", Uuid::new_v4()));
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temporary)
-        .map_err(|error| format!("无法创建临时凭据文件：{error}"))?;
-    if let Err(error) = file.write_all(&contents).and_then(|()| file.sync_all()) {
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("无法保存临时凭据文件：{error}"));
-    }
-    drop(file);
-    if let Err(error) = fs::rename(&temporary, path) {
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("无法保存本机凭据文件 {}：{error}", path.display()));
-    }
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .map_err(|error| format!("无法设置本机凭据文件权限：{error}"))?;
-    Ok(())
+    let contents = zeroize::Zeroizing::new(
+        serde_json::to_vec_pretty(credentials)
+            .map_err(|error| format!("无法序列化本机凭据：{error}"))?,
+    );
+    openfortivpn_manager_core::atomic_file::write_private(path, &contents)
+        .map_err(|error| format!("无法持久保存本机凭据文件 {}：{error}", path.display()))
 }
 
 #[cfg(target_os = "macos")]
@@ -592,7 +773,9 @@ fn store_password(app: &AppHandle, profile_id: &str, password: &str) -> Result<(
     let _guard = lock_credential_access()?;
     let path = local_credentials_path(app)?;
     let mut credentials = load_local_credentials_file(&path)?;
-    credentials.insert(profile_id.to_string(), password.to_string());
+    if let Some(mut old) = credentials.insert(profile_id.to_string(), password.to_string()) {
+        old.zeroize();
+    }
     persist_local_credentials_file(&path, &credentials)
 }
 
@@ -607,7 +790,9 @@ fn delete_stored_password(app: &AppHandle, profile_id: &str) -> Result<(), Strin
     let _guard = lock_credential_access()?;
     let path = local_credentials_path(app)?;
     let mut credentials = load_local_credentials_file(&path)?;
-    credentials.remove(profile_id);
+    if let Some(mut old) = credentials.remove(profile_id) {
+        old.zeroize();
+    }
     persist_local_credentials_file(&path, &credentials)
 }
 
@@ -618,39 +803,30 @@ fn delete_stored_password(_app: &AppHandle, profile_id: &str) -> Result<(), Stri
 }
 
 fn validate_line_value(label: &str, value: &str) -> Result<(), String> {
-    if value.contains('\n') || value.contains('\r') {
+    if value.contains(['\0', '\n', '\r']) {
         return Err(format!("{label} 不能包含换行符"));
     }
     Ok(())
 }
 
 fn validate_password(password: &str) -> Result<(), String> {
-    validate_line_value("密码", password)?;
-    if password.contains('\0') {
-        return Err("VPN 密码不能包含 NUL 字符".to_string());
-    }
-    if password.len() > ENGINE_PASSWORD_MAX_BYTES {
-        return Err(format!("VPN 密码不能超过 {ENGINE_PASSWORD_MAX_BYTES} 字节"));
-    }
-    if password
-        .as_bytes()
-        .first()
-        .is_some_and(u8::is_ascii_whitespace)
-        || password
-            .as_bytes()
-            .last()
-            .is_some_and(u8::is_ascii_whitespace)
-    {
-        return Err("VPN 密码不能以空白字符开头或结尾".to_string());
-    }
-    Ok(())
+    openfortivpn_manager_core::validation::password(password).map_err(|error| error.to_string())
 }
 
 fn read_usable_stored_password(
     app: &AppHandle,
     profile_id: &str,
 ) -> Result<Option<String>, String> {
-    read_stored_password(app, profile_id)?
+    let reference = app
+        .state::<AppState>()
+        .store
+        .lock()
+        .map_err(|_| "内部运行状态已损坏".to_string())?
+        .profiles
+        .get(profile_id)
+        .and_then(|p| p.credential_ref.clone())
+        .unwrap_or_else(|| profile_id.to_string());
+    read_stored_password(app, &reference)?
         .map(|password| {
             validate_password(&password)
                 .map_err(|message| format!("已保存的 VPN 密码无法使用：{message}"))?;
@@ -673,10 +849,22 @@ fn validate_profile(profile: &VpnProfile) -> Result<(), String> {
         return Err("端口必须在 1 到 65535 之间".to_string());
     }
 
+    use openfortivpn_manager_core::validation;
+    validation::line("id", &profile.id).map_err(|e| e.to_string())?;
     validate_line_value("配置名称", &profile.name)?;
     validate_line_value("服务器", &profile.host)?;
     validate_line_value("用户名", &profile.username)?;
     validate_line_value("Realm", &profile.realm)?;
+    validation::engine_field("host", &profile.host, validation::HOST_MAX_BYTES)
+        .map_err(|e| e.to_string())?;
+    validation::engine_field(
+        "username",
+        &profile.username,
+        validation::USERNAME_MAX_BYTES,
+    )
+    .map_err(|e| e.to_string())?;
+    validation::engine_field("realm", &profile.realm, validation::REALM_MAX_BYTES)
+        .map_err(|e| e.to_string())?;
 
     if !profile.trusted_cert.is_empty()
         && (profile.trusted_cert.len() != 64
@@ -688,7 +876,7 @@ fn validate_profile(profile: &VpnProfile) -> Result<(), String> {
         return Err("受信任证书必须是 64 位 SHA-256 十六进制摘要".to_string());
     }
 
-    Ok(())
+    validation::profile(profile).map_err(|error| error.to_string())
 }
 
 fn profile_view(profile: &VpnProfile, has_secret: bool, password_stored: bool) -> ProfileView {
@@ -969,7 +1157,7 @@ fn write_runtime_config(
         }
     }
     #[cfg(not(unix))]
-    fs::write(&path, config)
+    openfortivpn_manager_core::atomic_file::write_private(&path, config.as_bytes())
         .map_err(|error| format!("无法写入临时配置 {}：{error}", path.display()))?;
 
     Ok(path)
@@ -984,33 +1172,19 @@ fn runtime_directory(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(directory)
 }
 
-#[cfg(unix)]
 fn runtime_process_record_path(app: &AppHandle, instance_id: &str) -> Result<PathBuf, String> {
     Ok(runtime_directory(app)?.join(format!("{instance_id}.process.json")))
 }
 
-#[cfg(unix)]
 fn persist_runtime_process_record(
     app: &AppHandle,
     record: &RuntimeProcessRecord,
 ) -> Result<PathBuf, String> {
     let path = runtime_process_record_path(app, &record.instance_id)?;
-    let temporary = path.with_file_name(format!(
-        ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("process-record"),
-        Uuid::new_v4()
-    ));
     let contents = serde_json::to_string_pretty(record)
         .map_err(|error| format!("无法序列化 VPN 进程记录：{error}"))?;
-    fs::write(&temporary, contents).map_err(|error| format!("无法保存 VPN 进程记录：{error}"))?;
-    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
-        .map_err(|error| format!("无法设置 VPN 进程记录权限：{error}"))?;
-    if let Err(error) = fs::rename(&temporary, &path) {
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("无法原子更新 VPN 进程记录：{error}"));
-    }
+    openfortivpn_manager_core::atomic_file::write_private(&path, contents.as_bytes())
+        .map_err(|error| format!("无法持久保存 VPN 进程记录：{error}"))?;
     Ok(path)
 }
 
@@ -1077,15 +1251,47 @@ fn process_group_contains_engine(process_group_id: u32, engine: &std::path::Path
         .unwrap_or(true)
 }
 
-#[cfg(unix)]
 fn remove_runtime_process_record(app: &AppHandle, record: &RuntimeProcessRecord) {
-    if let Ok(path) = runtime_process_record_path(app, &record.instance_id) {
-        let _ = fs::remove_file(path);
+    if let Ok(directory) = runtime_directory(app) {
+        // Used only when spawn failed before creating a child.
+        let _ = fs::remove_file(directory.join(format!("{}.process.json", record.instance_id)));
+        let _ = fs::remove_file(directory.join(format!("{}.conf", record.instance_id)));
+        #[cfg(unix)]
+        let _ = fs::File::open(directory).and_then(|dir| dir.sync_all());
     }
-    let _ = fs::remove_file(&record.config_path);
 }
 
-#[cfg(unix)]
+fn finish_unstarted_process(
+    app: &AppHandle,
+    record: &RuntimeProcessRecord,
+    lease: &mut Option<SystemNetworkLease>,
+) -> Result<(), String> {
+    if let Some(lease) = lease.take() {
+        if let Err(error) = lease.finish(true, true) {
+            // Recovery needs this local anchor if global deletion/fsync failed.
+            if let Ok(mut store) = app.state::<AppState>().store.lock() {
+                store
+                    .stale_processes
+                    .insert(record.instance_id.clone(), record.clone());
+            }
+            return Err(error.to_string());
+        }
+    }
+    remove_runtime_process_record(app, record);
+    Ok(())
+}
+
+fn reap_unregistered_child(child: std::process::Child, wait_now: bool) {
+    let owned = OwnedProcess::new(child);
+    if wait_now {
+        if let Ok(mut child) = owned.lock() {
+            let _ = child.wait();
+        }
+    }
+    // A failed wait leaves the exact handle with the shared retrying reaper.
+    // The caller retains both recovery journals and network reservations.
+}
+
 fn load_stale_runtime_processes(
     app: &AppHandle,
 ) -> Result<BTreeMap<String, RuntimeProcessRecord>, String> {
@@ -1108,35 +1314,41 @@ fn load_stale_runtime_processes(
             .and_then(|name| name.strip_suffix(".process.json"))
             .unwrap_or_default()
             .to_string();
-        let config_path = runtime_directory(app)?.join(format!("{instance_id}.conf"));
-        let mut record = fs::read_to_string(&path)
-            .ok()
-            .and_then(|contents| serde_json::from_str::<RuntimeProcessRecord>(&contents).ok())
-            .unwrap_or_else(|| RuntimeProcessRecord {
-                instance_id: instance_id.clone(),
-                profile_id: String::new(),
-                pid: 0,
-                process_group_id: 0,
-                engine_path: resolve_engine(app).to_string_lossy().into_owned(),
-                config_path: config_path.to_string_lossy().into_owned(),
-            });
-        let rows = process_rows();
-        let discovered_group = rows
-            .as_deref()
-            .and_then(|rows| find_record_process_group(&record, rows));
-        if let Some(group) = discovered_group {
-            if record.process_group_id == 0 {
-                record.pid = group;
-                record.process_group_id = group;
-                let _ = persist_runtime_process_record(app, &record);
-            }
-            stale.insert(record.instance_id.clone(), record);
-        } else if rows.is_none() {
-            // Preserve the record when process inspection itself failed.
-            stale.insert(record.instance_id.clone(), record);
-        } else {
-            remove_runtime_process_record(app, &record);
+        Uuid::parse_str(&instance_id).map_err(|_| "无效的运行记录 ID".to_string())?;
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err("运行记录必须是普通文件".into());
         }
+        #[cfg(unix)]
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o777 != 0o600 {
+            return Err("运行记录必须是本用户拥有的私有普通文件".into());
+        }
+        let config_path = runtime_directory(app)?.join(format!("{instance_id}.conf"));
+        let record: RuntimeProcessRecord =
+            serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
+                .map_err(|_| "运行记录损坏，请保留现场恢复".to_string())?;
+        if record.instance_id != instance_id || record.config_path != config_path.to_string_lossy()
+        {
+            return Err("运行记录身份或配置路径不一致".into());
+        }
+        #[cfg(unix)]
+        let record = {
+            let mut record = record;
+            let rows = process_rows();
+            let discovered_group = rows
+                .as_deref()
+                .and_then(|rows| find_record_process_group(&record, rows));
+            if let Some(group) = discovered_group {
+                if record.process_group_id == 0 {
+                    record.pid = group;
+                    record.process_group_id = group;
+                    let _ = persist_runtime_process_record(app, &record);
+                }
+            }
+            record
+        };
+        // Process absence proves neither route nor DNS cleanup.
+        stale.insert(record.instance_id.clone(), record);
     }
 
     for entry in fs::read_dir(runtime_directory(app)?)
@@ -1170,7 +1382,7 @@ fn cleanup_stale_runtime_processes(app: &AppHandle) -> Result<(), String> {
         .cloned()
         .collect::<Vec<_>>();
 
-    for record in records {
+    if let Some(record) = records.into_iter().next() {
         if record.process_group_id == 0 {
             return Err("无法确定上次遗留 VPN 进程组，请保留现场并检查运行目录".to_string());
         }
@@ -1193,10 +1405,7 @@ fn cleanup_stale_runtime_processes(app: &AppHandle) -> Result<(), String> {
                 return Err("等待上次遗留的 VPN 进程退出超时".to_string());
             }
         }
-        remove_runtime_process_record(app, &record);
-        if let Ok(mut store) = app.state::<AppState>().store.lock() {
-            store.stale_processes.remove(&record.instance_id);
-        }
+        return Err("遗留进程已停止，但网络清理没有确认；请恢复网络后在恢复提示中确认".into());
     }
     Ok(())
 }
@@ -1206,11 +1415,219 @@ fn emit_instance(app: &AppHandle, view: &InstanceView) {
     schedule_tray_refresh(app);
 }
 
-fn profile_has_running_instance(store: &RuntimeStore, profile_id: &str) -> bool {
-    store
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryNotice {
+    instance_id: String,
+    profile_id: String,
+    message: String,
+}
+
+#[tauri::command]
+fn list_recovery_records(app: AppHandle) -> Result<Vec<RecoveryNotice>, String> {
+    let state = app.state::<AppState>();
+    let store = lock_store(&state)?;
+    let mut records = BTreeMap::new();
+    for record in store.stale_processes.values() {
+        records.insert(
+            record.instance_id.clone(),
+            RecoveryNotice {
+                instance_id: record.instance_id.clone(),
+                profile_id: record.profile_id.clone(),
+                message: "上次运行中断，网络清理未确认".into(),
+            },
+        );
+    }
+    for instance in store
         .instances
         .values()
-        .any(|instance| instance.view.profile_id == profile_id && instance.process_running)
+        .filter(|i| i.lifecycle.cleanup_failed())
+    {
+        records.insert(
+            instance.view.id.clone(),
+            RecoveryNotice {
+                instance_id: instance.view.id.clone(),
+                profile_id: instance.view.profile_id.clone(),
+                message: instance
+                    .failure_message
+                    .clone()
+                    .unwrap_or_else(|| "网络清理未确认".into()),
+            },
+        );
+    }
+    Ok(records.into_values().collect())
+}
+
+#[tauri::command]
+fn acknowledge_recovery(
+    app: AppHandle,
+    instance_id: String,
+    network_restored: bool,
+) -> Result<(), String> {
+    if !network_restored {
+        return Err("需要确认已停止遗留进程并恢复网络".into());
+    }
+    let state = app.state::<AppState>();
+    let _lifecycle = state.lifecycle.lock().map_err(|_| "生命周期状态已损坏")?;
+    let mut store = lock_store(&state)?;
+    if store
+        .instances
+        .get(&instance_id)
+        .is_some_and(|i| i.process_running)
+    {
+        return Err("引擎仍在运行，请先停止连接".into());
+    }
+    {
+        Uuid::parse_str(&instance_id).map_err(|_| "无效的恢复 ID")?;
+        let path = runtime_process_record_path(&app, &instance_id)?;
+        let record = if let Some(record) = store.stale_processes.get(&instance_id) {
+            record.clone()
+        } else {
+            serde_json::from_slice::<RuntimeProcessRecord>(
+                &openfortivpn_manager_core::private_file::read(&path, 8192)
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?
+        };
+        if record.instance_id != instance_id {
+            return Err("恢复记录与当前实例不一致".into());
+        }
+        #[cfg(unix)]
+        {
+            let rows = process_rows().ok_or("无法检查进程，不能确认恢复")?;
+            if find_record_process_group(&record, &rows).is_some() {
+                return Err("遗留引擎仍在运行，请先停止并恢复网络".into());
+            }
+        }
+        #[cfg(windows)]
+        {
+            use openfortivpn_manager_core::windows_process::{engine_is_running, inspect};
+            if let Some(identity) = record.process_identity.as_ref() {
+                if inspect(identity.pid).map_err(|e| e.to_string())?.as_ref() == Some(identity) {
+                    return Err("遗留引擎仍在运行，请先停止并恢复网络".into());
+                }
+            } else if engine_is_running(std::path::Path::new(&record.engine_path))
+                .map_err(|e| e.to_string())?
+            {
+                return Err("引擎仍在运行，无法确认无身份记录的恢复".into());
+            }
+        }
+        #[cfg(unix)]
+        {
+            if std::path::Path::new(&record.engine_path) == installed_engine_path() {
+                let output = Command::new(SUDO_EXECUTABLE)
+                    .arg("-n")
+                    .arg(installed_helper_path())
+                    .args(["recover-network", &instance_id, "--acknowledge-cleanup"])
+                    .stdin(Stdio::null())
+                    .output()
+                    .map_err(|e| e.to_string())?;
+                if !output.status.success() {
+                    return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+                }
+            } else if unsafe { libc::geteuid() } == 0 {
+                use openfortivpn_manager_core::network_authority as authority;
+                let directory = authority::system_directory().map_err(|e| e.to_string())?;
+                if let Some(owner) = authority::inspect(&directory).map_err(|e| e.to_string())? {
+                    if owner.manager == "desktop" && owner.attempt_id == instance_id {
+                        authority::acknowledge(&directory, &instance_id, owner.uid, || {
+                            let uncertain = if owner.process_group == 0 {
+                                !owner.pre_spawn_gated
+                            } else {
+                                (unsafe { libc::kill(-(owner.process_group as i32), 0) }) == 0
+                                    || std::io::Error::last_os_error().raw_os_error()
+                                        != Some(libc::ESRCH)
+                            };
+                            if uncertain {
+                                return Err(openfortivpn_manager_core::ControlError::new(
+                                    openfortivpn_manager_core::ErrorCode::RecoveryRequired,
+                                    "无法确认遗留 VPN 进程组不存在",
+                                ));
+                            }
+                            Ok(true)
+                        })
+                        .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            use openfortivpn_manager_core::windows_network_authority::{MachineAuthority, Owner};
+            let authority = MachineAuthority::open_system().map_err(|e| e.to_string())?;
+            if let Some(owner) = authority.inspect().map_err(|e| e.to_string())? {
+                if owner.attempt_id == instance_id {
+                    let current = Owner::new(
+                        instance_id.clone(),
+                        "desktop".into(),
+                        record.engine_path.clone(),
+                    )
+                    .map_err(|e| e.to_string())?;
+                    if owner.manager != "desktop"
+                        || !openfortivpn_manager_core::windows_process::same_executable(
+                            &owner.executable,
+                            &record.engine_path,
+                        )
+                    {
+                        return Err("系统网络恢复记录与本地引擎不一致".into());
+                    }
+                    authority
+                        .acknowledge(&instance_id, &current.principal_sid, || {
+                            // The local IPC already requires explicit network-restored
+                            // confirmation and rejects running owned instances. The
+                            // authority independently checks every matching engine.
+                            Ok(network_restored)
+                        })
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        // Derive deletion paths from the verified attempt, not persisted paths.
+        fs::remove_file(path).map_err(|e| e.to_string())?;
+        let config = runtime_directory(&app)?.join(format!("{instance_id}.conf"));
+        if config.exists() {
+            fs::remove_file(config).map_err(|e| e.to_string())?;
+        }
+        #[cfg(unix)]
+        fs::File::open(runtime_directory(&app)?)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| e.to_string())?;
+        store.stale_processes.remove(&instance_id);
+    }
+    if let Some(instance) = store.instances.get_mut(&instance_id) {
+        instance.lifecycle.acknowledge_recovery();
+        instance.view.status = "disconnected".into();
+        instance.view.message = "操作者已确认网络恢复".into();
+        instance.view.ended_at = Some(now_epoch());
+        instance.view.revision = instance.view.revision.saturating_add(1);
+    }
+    drop(store);
+    refresh_privilege_status(&app, false);
+    Ok(())
+}
+
+fn prune_finished_instances(store: &mut RuntimeStore) {
+    let keep = openfortivpn_manager_core::retention::terminal_ids_to_keep(
+        store
+            .instances
+            .iter()
+            .filter(|(_, i)| !i.process_running && !i.lifecycle.cleanup_failed())
+            .filter_map(|(id, i)| i.view.ended_at.map(|ended| (id.clone(), ended))),
+        now_epoch(),
+    );
+    store.instances.retain(|id, i| {
+        i.process_running
+            || i.lifecycle.cleanup_failed()
+            || i.view.ended_at.is_none()
+            || keep.contains(id)
+    });
+}
+
+fn profile_has_running_instance(store: &RuntimeStore, profile_id: &str) -> bool {
+    store.instances.values().any(|instance| {
+        instance.view.profile_id == profile_id
+            && (instance.process_running || instance.lifecycle.cleanup_failed())
+    })
 }
 
 fn profile_connection_in_progress(store: &RuntimeStore, profile_id: &str) -> bool {
@@ -1330,7 +1747,8 @@ fn restore_instance_after_stop_failure(
         if instance.view.status != "disconnecting" {
             return;
         }
-        instance.user_requested_stop = false;
+        // A failed signal does not revoke the user's stop intent.
+        instance.user_requested_stop = true;
         instance.view.status = status.to_string();
         instance.view.message = message;
         instance.view.revision = instance.view.revision.saturating_add(1);
@@ -1382,12 +1800,43 @@ fn fallback_status_from_log(line: &str) -> Option<(&'static str, &'static str)> 
 }
 
 fn handle_engine_event(app: &AppHandle, instance_id: &str, payload: &Value) {
+    let mut invalid = false;
+    let source = if let Ok(mut store) = app.state::<AppState>().store.lock() {
+        if let Some(instance) = store.instances.get_mut(instance_id) {
+            match instance.lifecycle.observe(payload) {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(error) => {
+                    instance.reconnect_blocked = true;
+                    instance.failure_message = Some(error.to_string());
+                    invalid = true;
+                }
+            }
+            instance.reconnect_blocked |= instance.lifecycle.retry_blocked();
+            instance.source_profile.clone()
+        } else {
+            return;
+        }
+    } else {
+        return;
+    };
+    if invalid {
+        authentication::fail_control(app, instance_id);
+        return;
+    }
+
     let event_name = payload
         .get("event")
         .and_then(Value::as_str)
         .unwrap_or_default();
 
     match event_name {
+        "auth_challenge" | "auth_challenge_closed" | "network_plan" => {
+            if authentication::handle_event(app, instance_id, payload).is_err() {
+                authentication::fail_control(app, instance_id);
+                return;
+            }
+        }
         "state_change" => {
             let state_name = payload
                 .get("state")
@@ -1403,6 +1852,17 @@ fn handle_engine_event(app: &AppHandle, instance_id: &str, payload: &Value) {
                 .unwrap_or_default();
             update_instance(app, instance_id, "connected", format!("已连接 · {ip}"));
         }
+        "cleanup_result" => {
+            if let Ok(mut store) = app.state::<AppState>().store.lock() {
+                if let Some(instance) = store.instances.get_mut(instance_id) {
+                    if instance.lifecycle.cleanup_failed() {
+                        instance.reconnect_blocked = true;
+                        instance.failure_message =
+                            Some("网络清理失败，需要恢复后才能启动新连接".into());
+                    }
+                }
+            }
+        }
         "tunnel_down" => {
             update_instance(
                 app,
@@ -1416,7 +1876,9 @@ fn handle_engine_event(app: &AppHandle, instance_id: &str, payload: &Value) {
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or("连接失败");
-            record_instance_failure(app, instance_id, message.to_string(), false);
+            let permanent = payload.get("retryable").and_then(Value::as_bool) == Some(false)
+                || payload.get("category").and_then(Value::as_str) == Some("auth");
+            record_instance_failure(app, instance_id, message.to_string(), permanent);
         }
         "cert_error" => {
             record_instance_failure(app, instance_id, "服务器证书验证失败".to_string(), true);
@@ -1425,100 +1887,126 @@ fn handle_engine_event(app: &AppHandle, instance_id: &str, payload: &Value) {
         _ => {}
     }
 
-    let profile_id = app
-        .state::<AppState>()
-        .store
-        .lock()
-        .ok()
-        .and_then(|store| {
-            store
-                .instances
-                .get(instance_id)
-                .map(|instance| instance.view.profile_id.clone())
-        })
-        .unwrap_or_default();
-
     let _ = app.emit(
         "vpn-engine-event",
         EngineEvent {
             instance_id: instance_id.to_string(),
-            profile_id,
+            profile_id: source.id,
+            profile_revision: source.revision,
+            host: source.host,
+            port: source.port,
             payload: payload.clone(),
         },
     );
 }
 
-fn spawn_stream_reader<R>(reader: R, app: AppHandle, instance_id: String, stream: &str)
+fn spawn_stream_reader<R>(
+    reader: R,
+    app: AppHandle,
+    instance_id: String,
+    stream: &str,
+) -> StreamReader
 where
-    R: Read + Send + 'static,
+    R: openfortivpn_manager_core::process_output::Pipe + Send + 'static,
 {
     let stream = stream.to_string();
-    thread::spawn(move || {
-        for line in BufReader::new(reader).lines() {
-            let Ok(line) = line else {
-                break;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let flag = cancelled.clone();
+    let join = thread::spawn(move || {
+        let mut reader =
+            openfortivpn_manager_core::process_output::CancellablePipe::new(reader, flag.clone());
+        let mut decoder = LineDecoder::default();
+        let mut buffer = [0u8; 4096];
+        let mut complete = true;
+        loop {
+            let length = match reader.read(&mut buffer) {
+                Ok(length) => length,
+                Err(_) => return false,
             };
-
-            if let Ok(payload) = serde_json::from_str::<Value>(&line) {
-                if payload.get("event").is_some() {
-                    handle_engine_event(&app, &instance_id, &payload);
-                    continue;
+            let records = if length == 0 {
+                decoder.eof().into_iter().collect()
+            } else {
+                decoder.feed(&buffer[..length])
+            };
+            for record in records {
+                let line = match record {
+                    Line::Text(line) => line,
+                    Line::Oversized => {
+                        complete = false;
+                        record_instance_failure(
+                            &app,
+                            &instance_id,
+                            "引擎事件超过长度限制".into(),
+                            true,
+                        );
+                        continue;
+                    }
+                    Line::InvalidUtf8 => {
+                        complete = false;
+                        continue;
+                    }
+                };
+                if let Ok(payload) = serde_json::from_str::<Value>(&line) {
+                    if payload.get("event").is_some() {
+                        handle_engine_event(&app, &instance_id, &payload);
+                        continue;
+                    }
                 }
+                if let Some((status, message)) = fallback_status_from_log(&line) {
+                    let legacy = app
+                        .state::<AppState>()
+                        .store
+                        .lock()
+                        .ok()
+                        .and_then(|store| {
+                            store
+                                .instances
+                                .get(&instance_id)
+                                .map(|i| i.lifecycle.accepts_legacy_readiness())
+                        })
+                        .unwrap_or(false);
+                    if legacy {
+                        update_instance(&app, &instance_id, status, message.to_string());
+                    }
+                }
+                let event = LogEvent {
+                    id: openfortivpn_manager_core::protocol::next_log_id(),
+                    instance_id: instance_id.clone(),
+                    stream: stream.clone(),
+                    line: openfortivpn_manager_core::protocol::redact(&line),
+                    timestamp: now_epoch(),
+                };
+                if let Ok(mut store) = app.state::<AppState>().store.lock() {
+                    retain_log(&mut store.logs, event.clone());
+                }
+                let _ = app.emit("vpn-log", event);
             }
-
-            if line.contains("Could not authenticate to gateway.") {
-                record_instance_failure(
-                    &app,
-                    &instance_id,
-                    "VPN 身份验证失败：网关拒绝了账号、密码或认证策略；请重新输入密码并确认 Realm"
-                        .to_string(),
-                    true,
-                );
+            if length == 0 {
+                return complete && !flag.load(Ordering::Acquire);
             }
-            if let Some((status, message)) = fallback_status_from_log(&line) {
-                update_instance(&app, &instance_id, status, message.to_string());
-            }
-
-            let event = LogEvent {
-                instance_id: instance_id.clone(),
-                stream: stream.clone(),
-                line,
-                timestamp: now_epoch(),
-            };
-            if let Ok(mut store) = app.state::<AppState>().store.lock() {
-                retain_log(&mut store.logs, event.clone());
-            }
-            let _ = app.emit("vpn-log", event);
         }
     });
+    StreamReader { join, cancelled }
 }
 
-fn retain_log(logs: &mut VecDeque<LogEvent>, event: LogEvent) {
-    logs.push_back(event);
-    while logs.len() > MAX_RETAINED_LOGS {
-        logs.pop_front();
-    }
+fn drain_stream_readers(readers: Vec<StreamReader>) -> bool {
+    openfortivpn_manager_core::supervisor::drain_streams(readers, Duration::from_secs(2))
+}
+
+fn retain_log(logs: &mut LogBuffer, event: LogEvent) {
+    logs.push(event);
 }
 
 fn recent_logs(
-    logs: &VecDeque<LogEvent>,
+    logs: &LogBuffer,
     instance_id: Option<&str>,
     limit: usize,
-) -> Vec<LogEvent> {
-    let mut selected = logs
-        .iter()
-        .rev()
-        .filter(|event| instance_id.is_none_or(|id| event.instance_id == id))
-        .take(limit.clamp(1, MAX_RETAINED_LOGS))
-        .cloned()
-        .collect::<Vec<_>>();
-    selected.reverse();
-    selected
+) -> openfortivpn_manager_core::domain::LogSnapshot {
+    logs.recent(instance_id, limit)
 }
 
 fn auto_reconnect_delay_seconds(attempt: u32) -> u64 {
-    let exponent = attempt.saturating_sub(1).min(4);
-    (3_u64.saturating_mul(1_u64 << exponent)).min(30)
+    openfortivpn_manager_core::lifecycle::retry_delay_seconds(attempt)
 }
 
 fn schedule_auto_reconnect(
@@ -1529,7 +2017,31 @@ fn schedule_auto_reconnect(
     generation: u64,
 ) {
     thread::spawn(move || {
-        thread::sleep(Duration::from_secs(delay_seconds));
+        let clock = Instant::now();
+        let mut timer = openfortivpn_manager_core::lifecycle::RetryTimer::default();
+        timer.schedule(generation, 0, delay_seconds.saturating_mul(1000));
+        loop {
+            let state = app.state::<AppState>();
+            if state.shutting_down.load(Ordering::SeqCst) {
+                return;
+            }
+            let current = state
+                .store
+                .lock()
+                .ok()
+                .and_then(|store| store.reconnect_generations.get(&profile_id).copied());
+            if current != Some(generation) {
+                timer.cancel();
+                return;
+            }
+            if timer.take_due(
+                generation,
+                clock.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            ) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
 
         let still_enabled = app
             .state::<AppState>()
@@ -1558,11 +2070,17 @@ fn schedule_auto_reconnect(
             return;
         }
 
-        if let Err(message) = start_profile_impl(
+        let queued_profile = profile_id.clone();
+        let start = tauri::async_runtime::block_on(run_profile_command(
             app.clone(),
             profile_id.clone(),
-            StartOrigin::AutoReconnect(generation),
-        ) {
+            move |app| {
+                start_profile_impl(app, queued_profile, StartOrigin::AutoReconnect(generation))
+                    .map_err(Into::into)
+            },
+        ))
+        .map_err(|e| e.message);
+        if let Err(message) = start {
             if message == AUTO_RECONNECT_CANCELLED {
                 return;
             }
@@ -1619,121 +2137,198 @@ fn schedule_auto_reconnect(
     });
 }
 
+struct ProcessResources {
+    config_path: PathBuf,
+    process_record_path: Option<PathBuf>,
+    network_lease: Option<SystemNetworkLease>,
+}
 fn spawn_process_monitor(
     app: AppHandle,
     instance_id: String,
-    child: Arc<Mutex<Child>>,
-    config_path: PathBuf,
-    process_record_path: Option<PathBuf>,
+    child: OwnedProcess,
+    resources: ProcessResources,
+    readers: Vec<StreamReader>,
 ) {
-    thread::spawn(move || loop {
-        let status = {
-            let Ok(mut child) = child.lock() else {
-                update_instance(
-                    &app,
-                    &instance_id,
-                    "failed",
-                    "无法访问 VPN 进程".to_string(),
-                );
-                return;
-            };
-            child.try_wait()
-        };
-
-        match status {
-            Ok(Some(exit_status)) => {
-                // Give stdout/stderr readers a brief chance to classify fatal
-                // authentication or certificate errors before retry policy is decided.
-                thread::sleep(Duration::from_millis(100));
-                let (view, reconnect) = {
-                    let state = app.state::<AppState>();
-                    let Ok(mut store) = state.store.lock() else {
-                        return;
-                    };
-                    let Some(instance) = store.instances.get(&instance_id) else {
-                        return;
-                    };
-                    let profile_id = instance.view.profile_id.clone();
-                    let profile_name = instance.view.profile_name.clone();
-                    let user_requested_stop = instance.user_requested_stop;
-                    let reconnect_blocked = instance.reconnect_blocked;
-                    let failure_message = instance.failure_message.clone();
-                    let auto_reconnect = automatic_retry_allowed(
-                        user_requested_stop,
-                        reconnect_blocked,
-                        store
-                            .profiles
-                            .get(&profile_id)
-                            .is_some_and(|profile| profile.auto_reconnect),
+    thread::spawn(move || {
+        let ProcessResources {
+            config_path,
+            process_record_path,
+            mut network_lease,
+        } = resources;
+        let mut readers = Some(readers);
+        loop {
+            let status = {
+                let Ok(mut child) = child.lock() else {
+                    update_instance(
+                        &app,
+                        &instance_id,
+                        "failed",
+                        "无法访问 VPN 进程".to_string(),
                     );
-                    let delay_seconds = if auto_reconnect {
-                        let attempt = store
-                            .reconnect_attempts
-                            .entry(profile_id.clone())
-                            .and_modify(|attempt| *attempt = attempt.saturating_add(1))
-                            .or_insert(1);
-                        Some(auto_reconnect_delay_seconds(*attempt))
-                    } else {
-                        if user_requested_stop {
-                            store.reconnect_attempts.remove(&profile_id);
-                        }
-                        None
-                    };
-                    let generation = store
-                        .reconnect_generations
-                        .get(&profile_id)
-                        .copied()
-                        .unwrap_or_default();
-
-                    let Some(instance) = store.instances.get_mut(&instance_id) else {
-                        return;
-                    };
-                    instance.process_running = false;
-                    instance.view.status = if user_requested_stop || exit_status.success() {
-                        "disconnected".to_string()
-                    } else {
-                        "failed".to_string()
-                    };
-                    instance.view.message = match delay_seconds {
-                        Some(delay) => format!("连接已中断，{delay} 秒后自动重连"),
-                        None => failure_message.unwrap_or_else(|| match exit_status.code() {
-                            Some(code) => format!("进程已退出，代码 {code}"),
-                            None => "进程已终止".to_string(),
-                        }),
-                    };
-                    instance.view.exit_code = exit_status.code();
-                    instance.view.ended_at = Some(now_epoch());
-                    instance.view.revision = instance.view.revision.saturating_add(1);
-                    (
-                        instance.view.clone(),
-                        delay_seconds.map(|delay| (profile_id, profile_name, delay, generation)),
-                    )
+                    return;
                 };
-                let _ = fs::remove_file(&config_path);
-                if let Some(path) = process_record_path.as_ref() {
-                    let _ = fs::remove_file(path);
+                child.try_wait()
+            };
+
+            match status {
+                Ok(Some(exit_status)) => {
+                    let output_complete = drain_stream_readers(readers.take().unwrap_or_default());
+                    if !output_complete {
+                        record_instance_failure(
+                            &app,
+                            &instance_id,
+                            "引擎输出未完成，需要检查残留子进程".into(),
+                            true,
+                        );
+                    }
+                    let (view, reconnect) = {
+                        let state = app.state::<AppState>();
+                        let Ok(mut store) = state.store.lock() else {
+                            return;
+                        };
+                        let Some(instance) = store.instances.get(&instance_id) else {
+                            return;
+                        };
+                        let profile_id = instance.view.profile_id.clone();
+                        let profile_name = instance.view.profile_name.clone();
+                        #[cfg(unix)]
+                        let forced = {
+                            use std::os::unix::process::ExitStatusExt;
+                            exit_status.signal() == Some(libc::SIGKILL)
+                        };
+                        #[cfg(not(unix))]
+                        let forced = !exit_status.success() && instance.user_requested_stop;
+                        if let Some(instance) = store.instances.get_mut(&instance_id) {
+                            if !instance.lifecycle.reaped(output_complete, forced) {
+                                instance.reconnect_blocked = true;
+                                instance.failure_message =
+                                    Some("进程已退出，但网络清理未确认，需要恢复".into());
+                            }
+                            if let Some(lease) = network_lease.take() {
+                                if lease
+                                    .finish(true, !instance.lifecycle.cleanup_failed())
+                                    .is_err()
+                                {
+                                    instance.lifecycle.require_recovery();
+                                    instance.reconnect_blocked = true;
+                                    instance.failure_message =
+                                        Some("系统网络占用恢复未确认，需要本地恢复".into());
+                                }
+                            }
+                            if !openfortivpn_manager_core::lifecycle::exit_retryable(
+                                exit_status.code(),
+                            ) {
+                                instance.reconnect_blocked = true;
+                            }
+                        }
+                        let instance = store
+                            .instances
+                            .get(&instance_id)
+                            .expect("instance remains registered");
+                        let user_requested_stop = instance.user_requested_stop;
+                        let cleanup_failed = instance.lifecycle.cleanup_failed();
+                        let reconnect_blocked = instance.reconnect_blocked;
+                        let failure_message = instance.failure_message.clone();
+                        let auto_reconnect = automatic_retry_allowed(
+                            user_requested_stop,
+                            reconnect_blocked,
+                            store
+                                .profiles
+                                .get(&profile_id)
+                                .is_some_and(|profile| profile.auto_reconnect),
+                        );
+                        let delay_seconds = if auto_reconnect {
+                            let attempt = store
+                                .reconnect_attempts
+                                .entry(profile_id.clone())
+                                .and_modify(|attempt| *attempt = attempt.saturating_add(1))
+                                .or_insert(1);
+                            Some(auto_reconnect_delay_seconds(*attempt))
+                        } else {
+                            if user_requested_stop {
+                                store.reconnect_attempts.remove(&profile_id);
+                            }
+                            None
+                        };
+                        let generation = store
+                            .reconnect_generations
+                            .get(&profile_id)
+                            .copied()
+                            .unwrap_or_default();
+
+                        let Some(instance) = store.instances.get_mut(&instance_id) else {
+                            return;
+                        };
+                        instance.process_running = false;
+                        if let Some(input) = instance.input.take() {
+                            input.cancel();
+                        }
+                        instance.view.status =
+                            if !cleanup_failed && (user_requested_stop || exit_status.success()) {
+                                "disconnected".to_string()
+                            } else {
+                                "failed".to_string()
+                            };
+                        instance.view.message = match delay_seconds {
+                            Some(delay) => format!("连接已中断，{delay} 秒后自动重连"),
+                            None => failure_message.unwrap_or_else(|| match exit_status.code() {
+                                Some(code) => format!("进程已退出，代码 {code}"),
+                                None => "进程已终止".to_string(),
+                            }),
+                        };
+                        instance.view.exit_code = exit_status.code();
+                        instance.view.ended_at = Some(now_epoch());
+                        instance.view.revision = instance.view.revision.saturating_add(1);
+                        let result = (
+                            instance.view.clone(),
+                            delay_seconds
+                                .map(|delay| (profile_id, profile_name, delay, generation)),
+                        );
+                        store
+                            .challenges
+                            .cancel_attempt(&result.0.profile_id, &instance_id);
+                        result
+                    };
+                    let _ = fs::remove_file(&config_path);
+                    if !app
+                        .state::<AppState>()
+                        .store
+                        .lock()
+                        .ok()
+                        .and_then(|store| {
+                            store
+                                .instances
+                                .get(&instance_id)
+                                .map(|i| i.lifecycle.cleanup_failed())
+                        })
+                        .unwrap_or(true)
+                    {
+                        if let Some(path) = process_record_path.as_ref() {
+                            let _ = fs::remove_file(path);
+                        }
+                    }
+                    emit_instance(&app, &view);
+                    if let Some((profile_id, profile_name, delay_seconds, generation)) = reconnect {
+                        schedule_auto_reconnect(
+                            app.clone(),
+                            profile_id,
+                            profile_name,
+                            delay_seconds,
+                            generation,
+                        );
+                    }
+                    return;
                 }
-                emit_instance(&app, &view);
-                if let Some((profile_id, profile_name, delay_seconds, generation)) = reconnect {
-                    schedule_auto_reconnect(
-                        app.clone(),
-                        profile_id,
-                        profile_name,
-                        delay_seconds,
-                        generation,
+                Ok(None) => thread::sleep(Duration::from_millis(250)),
+                Err(error) => {
+                    record_instance_failure(
+                        &app,
+                        &instance_id,
+                        format!("无法检查 VPN 进程：{error}"),
+                        false,
                     );
+                    thread::sleep(Duration::from_secs(1));
                 }
-                return;
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(250)),
-            Err(error) => {
-                record_instance_failure(
-                    &app,
-                    &instance_id,
-                    format!("无法检查 VPN 进程：{error}"),
-                    false,
-                );
-                thread::sleep(Duration::from_secs(1));
             }
         }
     });
@@ -1742,6 +2337,7 @@ fn spawn_process_monitor(
 #[tauri::command]
 fn list_profiles(state: State<'_, AppState>) -> Result<Vec<ProfileView>, String> {
     let store = lock_store(&state)?;
+    ensure_repository_ready(&store)?;
     Ok(store
         .profiles
         .values()
@@ -1782,17 +2378,31 @@ fn update_desktop_preferences(
     Ok(preferences)
 }
 
-fn reserve_profile_mutation(app: &AppHandle, profile_id: &str) -> Result<(), String> {
+fn reserve_profile_mutation(
+    app: &AppHandle,
+    profile_id: &str,
+) -> Result<(), openfortivpn_manager_http::ApiError> {
     let state = app.state::<AppState>();
     let mut store = state
         .store
         .lock()
         .map_err(|_| "内部运行状态已损坏".to_string())?;
-    if store.mutating_profiles.contains(profile_id) {
-        return Err("该配置正在被其他操作修改，请稍后重试".to_string());
+    ensure_repository_ready(&store).map_err(|_| repository_api_error())?;
+    if store.restoring_repository || store.mutating_profiles.contains(profile_id) {
+        return Err(openfortivpn_manager_http::ApiError::new(
+            axum::http::StatusCode::CONFLICT,
+            "PROFILE_BUSY",
+            "该配置正在被其他操作修改，请稍后重试",
+            true,
+        ));
     }
     if profile_connection_in_progress(&store, profile_id) {
-        return Err("该配置正在连接，请先断开".to_string());
+        return Err(openfortivpn_manager_http::ApiError::new(
+            axum::http::StatusCode::CONFLICT,
+            "PROFILE_BUSY",
+            "该配置正在连接，请先断开",
+            true,
+        ));
     }
     store.mutating_profiles.insert(profile_id.to_string());
     bump_reconnect_generation(&mut store, profile_id);
@@ -1806,83 +2416,61 @@ fn release_profile_mutation(app: &AppHandle, profile_id: &str) {
     };
 }
 
+async fn run_profile_command<T: Send + 'static>(
+    app: AppHandle,
+    profile: String,
+    command: impl FnOnce(AppHandle) -> Result<T, openfortivpn_manager_http::ApiError> + Send + 'static,
+) -> Result<T, openfortivpn_manager_http::ApiError> {
+    let actors = app.state::<AppState>().commands.clone();
+    actors
+        .dispatch(&profile, async move {
+            tokio::task::spawn_blocking(move || command(app))
+                .await
+                .map_err(|_| {
+                    openfortivpn_manager_http::ApiError::from_message(
+                        "配置操作 worker 失败，请检查恢复状态".into(),
+                    )
+                })?
+        })
+        .await
+        .map_err(|error| openfortivpn_manager_http::ApiError::from_error(error.into()))?
+}
+
 #[tauri::command]
-fn save_profile(app: AppHandle, mut input: SaveProfileInput) -> Result<ProfileView, String> {
+async fn save_profile(app: AppHandle, mut input: SaveProfileInput) -> Result<ProfileView, String> {
+    if input.profile.id.trim().is_empty() {
+        input.profile.id = Uuid::new_v4().to_string();
+    }
+    run_profile_command(app, input.profile.id.clone(), move |app| {
+        save_profile_service(app, input)
+    })
+    .await
+    .map_err(|error| error.message)
+}
+
+fn save_profile_service(
+    app: AppHandle,
+    mut input: SaveProfileInput,
+) -> Result<ProfileView, openfortivpn_manager_http::ApiError> {
     if input.profile.id.trim().is_empty() {
         input.profile.id = Uuid::new_v4().to_string();
     }
     validate_profile(&input.profile)?;
-
-    let password = input.password.filter(|password| !password.is_empty());
-    if let Some(password) = password.as_deref() {
-        validate_password(password)?;
-    }
-
-    if input.profile.auto_connect && !input.remember_password {
-        return Err("自动连接需要将密码保存到本机凭据存储".to_string());
-    }
-
     let profile_id = input.profile.id.clone();
     reserve_profile_mutation(&app, &profile_id)?;
-    let result = (|| -> Result<ProfileView, String> {
-        let (was_stored, was_unknown) = {
-            let state = app.state::<AppState>();
-            let store = lock_store(&state)?;
-            (
-                store.stored_secret_profiles.contains(&profile_id),
-                store.unknown_secret_profiles.contains(&profile_id),
-            )
-        };
-
-        let mut password_from_storage = None;
-        if input.remember_password {
-            if let Some(password) = password.as_deref() {
-                store_password(&app, &profile_id, password)?;
-            } else if was_stored {
-                // An empty password while editing means keep the existing credential.
-            } else {
-                password_from_storage = read_usable_stored_password(&app, &profile_id)?;
-                if password_from_storage.is_none() {
-                    return Err("请先输入密码，再保存到本机凭据存储".to_string());
-                }
-            }
-        } else if was_stored || was_unknown {
-            delete_stored_password(&app, &profile_id)?;
-        }
-
-        let view = {
-            let state = app.state::<AppState>();
-            let mut store = lock_store(&state)?;
-            let password = password.or(password_from_storage);
-            let mut profiles = store.profiles.clone();
-            let mut stored_secret_profiles = store.stored_secret_profiles.clone();
-            let mut unknown_secret_profiles = store.unknown_secret_profiles.clone();
-            if input.remember_password {
-                stored_secret_profiles.insert(profile_id.clone());
-            } else {
-                stored_secret_profiles.remove(&profile_id);
-            }
-            unknown_secret_profiles.remove(&profile_id);
-            profiles.insert(profile_id.clone(), input.profile.clone());
-            persist_profiles(
-                &app,
-                &profiles,
-                &stored_secret_profiles,
-                &unknown_secret_profiles,
-            )?;
-            store.profiles = profiles;
-            store.stored_secret_profiles = stored_secret_profiles;
-            store.unknown_secret_profiles = unknown_secret_profiles;
-            if let Some(password) = password {
-                store.secrets.insert(profile_id.clone(), password);
-            }
-            profile_view(
-                &input.profile,
-                store.secrets.contains_key(&profile_id) || input.remember_password,
-                store.stored_secret_profiles.contains(&profile_id),
-            )
-        };
-
+    let result = (|| -> Result<ProfileView, openfortivpn_manager_http::ApiError> {
+        let mut repository = profile_repository::DesktopRepository::new(&app)?;
+        let view = openfortivpn_manager_core::profile_service::save(
+            &mut repository,
+            openfortivpn_manager_core::profile_service::SaveRequest {
+                profile: input.profile.clone(),
+                password: input.password.take().map(zeroize::Zeroizing::new),
+                remember_password: input.remember_password,
+                expected_revision: input.expected_revision,
+            },
+            openfortivpn_manager_core::profile_service::MissingPasswordPolicy::RequireWhenRemembering,
+        )?;
+        drop(repository);
         publish_privilege_status(&app);
         Ok(view)
     })();
@@ -1891,35 +2479,64 @@ fn save_profile(app: AppHandle, mut input: SaveProfileInput) -> Result<ProfileVi
 }
 
 #[tauri::command]
-fn delete_profile(app: AppHandle, profile_id: String) -> Result<(), String> {
+async fn delete_profile(
+    app: AppHandle,
+    profile_id: String,
+    expected_revision: Option<u64>,
+    stop_first: Option<bool>,
+) -> Result<(), String> {
+    run_profile_command(app, profile_id.clone(), move |app| {
+        delete_profile_service(
+            app,
+            profile_id,
+            expected_revision,
+            stop_first.unwrap_or(true),
+        )
+    })
+    .await
+    .map_err(|error| error.message)
+}
+
+fn delete_profile_service(
+    app: AppHandle,
+    profile_id: String,
+    expected_revision: Option<u64>,
+    stop_first: bool,
+) -> Result<(), openfortivpn_manager_http::ApiError> {
+    {
+        let state = app.state::<AppState>();
+        let store = lock_store(&state)?;
+        let profile = store.profiles.get(&profile_id).ok_or_else(|| {
+            openfortivpn_manager_http::ApiError::new(
+                axum::http::StatusCode::NOT_FOUND,
+                "PROFILE_NOT_FOUND",
+                "找不到指定配置",
+                false,
+            )
+        })?;
+        openfortivpn_manager_core::profile_service::check_delete(
+            profile,
+            expected_revision,
+            profile_connection_in_progress(&store, &profile_id),
+            stop_first,
+        )?;
+    }
     disconnect_profile_impl(app.clone(), profile_id.clone())?;
     wait_for_profile_to_stop(&app, &profile_id)?;
     reserve_profile_mutation(&app, &profile_id)?;
-    let result = (|| -> Result<(), String> {
-        let was_stored = {
-            let state = app.state::<AppState>();
-            let store = lock_store(&state)?;
-            if !store.profiles.contains_key(&profile_id) {
-                return Err("找不到指定配置".to_string());
-            }
-            store.stored_secret_profiles.contains(&profile_id)
-                || store.unknown_secret_profiles.contains(&profile_id)
-        };
-
-        if was_stored {
-            delete_stored_password(&app, &profile_id)?;
-        }
-
-        let state = app.state::<AppState>();
-        let mut store = lock_store(&state)?;
-        remove_profile_runtime_state(&mut store, &profile_id);
-        persist_profiles(
-            &app,
-            &store.profiles,
-            &store.stored_secret_profiles,
-            &store.unknown_secret_profiles,
+    let result = (|| -> Result<(), openfortivpn_manager_http::ApiError> {
+        let mut repository = profile_repository::DesktopRepository::new(&app)?;
+        openfortivpn_manager_core::profile_service::delete(
+            &mut repository,
+            &profile_id,
+            expected_revision,
         )?;
-        drop(store);
+        {
+            let state = app.state::<AppState>();
+            let mut store = lock_store(&state)?;
+            remove_profile_runtime_state(&mut store, &profile_id);
+        }
+        drop(repository);
         publish_privilege_status(&app);
         Ok(())
     })();
@@ -1929,7 +2546,9 @@ fn delete_profile(app: AppHandle, profile_id: String) -> Result<(), String> {
 
 fn remove_profile_runtime_state(store: &mut RuntimeStore, profile_id: &str) {
     store.profiles.remove(profile_id);
-    store.secrets.remove(profile_id);
+    if let Some(mut secret) = store.secrets.remove(profile_id) {
+        secret.zeroize();
+    }
     store.stored_secret_profiles.remove(profile_id);
     store.unknown_secret_profiles.remove(profile_id);
     store.reconnect_attempts.remove(profile_id);
@@ -1941,7 +2560,8 @@ fn remove_profile_runtime_state(store: &mut RuntimeStore, profile_id: &str) {
 
 #[tauri::command]
 fn list_instances(state: State<'_, AppState>) -> Result<Vec<InstanceView>, String> {
-    let store = lock_store(&state)?;
+    let mut store = lock_store(&state)?;
+    prune_finished_instances(&mut store);
     let mut instances: Vec<InstanceView> = store
         .instances
         .values()
@@ -1956,7 +2576,7 @@ fn list_logs(
     state: State<'_, AppState>,
     instance_id: Option<String>,
     limit: Option<usize>,
-) -> Result<Vec<LogEvent>, String> {
+) -> Result<openfortivpn_manager_core::domain::LogSnapshot, String> {
     let store = lock_store(&state)?;
     Ok(recent_logs(
         &store.logs,
@@ -1966,28 +2586,60 @@ fn list_logs(
 }
 
 #[tauri::command]
+fn diagnostic_report(app: AppHandle) -> Result<Value, String> {
+    let snapshot = serde_json::json!({
+        "profiles": list_profiles(app.state())?,
+        "instances": list_instances(app.state())?,
+        "logs": list_logs(app.state(),None,Some(2000))?,
+        "engine": engine_info(app.clone()),
+        "privilege": privilege_status_value(&app,app.state::<AppState>().privilege_ready.load(Ordering::SeqCst)),
+        "runJournal": list_recovery_records(app.clone())?,
+    });
+    let capabilities =
+        serde_json::to_value(openfortivpn_manager_core::domain::Capabilities::default())
+            .map_err(|e| e.to_string())?;
+    Ok(openfortivpn_manager_core::diagnostics::report(
+        &snapshot,
+        &capabilities,
+        now_epoch(),
+    ))
+}
+
+#[tauri::command]
 fn engine_info(app: AppHandle) -> EngineInfo {
     let path = resolve_engine(&app);
-    let output = Command::new(&path).arg("--version").output();
-    let (available, version) = match output {
-        Ok(output) if output.status.success() => (
-            true,
-            String::from_utf8_lossy(&output.stdout).trim().to_string(),
-        ),
-        Ok(output) => (
-            false,
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ),
-        Err(error) => (false, error.to_string()),
-    };
+    let state = app.state::<AppState>();
+    let mut cache = state
+        .engine_cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((checked, cached_path, info)) = cache.as_ref() {
+        if cached_path == &path && checked.elapsed() < Duration::from_secs(60) {
+            return info.clone();
+        }
+    }
+    let (available, version, event_protocol, manager_launch_gate) =
+        match openfortivpn_manager_core::engine::probe(&path) {
+            Ok(metadata) => (
+                true,
+                metadata.version,
+                metadata.event_protocol,
+                metadata.manager_launch_gate,
+            ),
+            Err(error) => (false, error.to_string(), None, false),
+        };
 
-    EngineInfo {
+    let info = EngineInfo {
         platform: env::consts::OS.to_string(),
         path: path.to_string_lossy().to_string(),
         available,
         version,
+        event_protocol,
+        manager_launch_gate,
         requires_elevation: true,
-    }
+    };
+    *cache = Some((Instant::now(), path, info.clone()));
+    info
 }
 
 #[cfg(unix)]
@@ -2271,7 +2923,10 @@ fn spawn_profile_process(
     }
 
     let instance_id = Uuid::new_v4().to_string();
+    let private_control = authentication::experimental_control();
     let adapter_name = make_adapter_name(&profile, &instance_id);
+    #[cfg(unix)]
+    let gated_launch = !profile.use_sudo && engine_info(app.clone()).manager_launch_gate;
     let config_path = write_runtime_config(&app, &profile, &password, &instance_id, &adapter_name)?;
     let bundled_engine = resolve_engine(&app);
     #[cfg(unix)]
@@ -2280,8 +2935,9 @@ fn spawn_profile_process(
     } else {
         bundled_engine.clone()
     };
+    #[cfg(windows)]
+    let process_engine = bundled_engine.clone();
 
-    #[cfg(unix)]
     let mut runtime_record = RuntimeProcessRecord {
         instance_id: instance_id.clone(),
         profile_id: profile.id.clone(),
@@ -2289,8 +2945,9 @@ fn spawn_profile_process(
         process_group_id: 0,
         engine_path: process_engine.to_string_lossy().into_owned(),
         config_path: config_path.to_string_lossy().into_owned(),
+        #[cfg(windows)]
+        process_identity: None,
     };
-    #[cfg(unix)]
     let process_record_path = match persist_runtime_process_record(&app, &runtime_record) {
         Ok(path) => Some(path),
         Err(message) => {
@@ -2298,8 +2955,91 @@ fn spawn_profile_process(
             return Err(message);
         }
     };
+    // Keep a local recovery path before the global write. An uncertain global
+    // fsync can publish ownership even when acquire returns an error.
+    #[cfg(unix)]
+    let mut network_lease = if !profile.use_sudo {
+        use openfortivpn_manager_core::network_authority as authority;
+        let directory = match authority::system_directory() {
+            Ok(directory) => directory,
+            Err(error) => {
+                remove_runtime_process_record(&app, &runtime_record);
+                return Err(error.to_string());
+            }
+        };
+        match authority::ExclusiveLease::acquire(
+            &directory,
+            authority::Owner {
+                attempt_id: instance_id.clone(),
+                manager: "desktop".into(),
+                uid: unsafe { libc::geteuid() },
+                process_group: 0,
+                pre_spawn_gated: gated_launch,
+            },
+        ) {
+            Ok(lease) => Some(lease),
+            Err(error) => {
+                let uncertain = match authority::inspect(&directory) {
+                    Ok(Some(owner)) => owner.attempt_id == instance_id,
+                    Ok(None) => false,
+                    Err(_) => true,
+                };
+                if uncertain {
+                    if let Ok(mut store) = state.store.lock() {
+                        store
+                            .stale_processes
+                            .insert(instance_id.clone(), runtime_record.clone());
+                    }
+                } else {
+                    remove_runtime_process_record(&app, &runtime_record);
+                }
+                return Err(error.to_string());
+            }
+        }
+    } else {
+        None
+    };
     #[cfg(windows)]
-    let process_record_path = None;
+    let mut network_lease = {
+        use openfortivpn_manager_core::windows_network_authority::{MachineAuthority, Owner};
+        let prepared = MachineAuthority::open_system().and_then(|authority| {
+            Owner::new(
+                instance_id.clone(),
+                "desktop".into(),
+                process_engine.to_string_lossy().into_owned(),
+            )
+            .map(|owner| (authority, owner))
+        });
+        let (authority, owner) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                remove_runtime_process_record(&app, &runtime_record);
+                return Err(error.to_string());
+            }
+        };
+        match authority.acquire(owner) {
+            Ok(lease) => Some(lease),
+            Err(error) => {
+                let uncertain = match MachineAuthority::open_system()
+                    .and_then(|authority| authority.inspect())
+                {
+                    Ok(Some(owner)) => owner.attempt_id == instance_id,
+                    Ok(None) => false,
+                    Err(_) => true,
+                };
+                if uncertain {
+                    if let Ok(mut store) = state.store.lock() {
+                        store
+                            .stale_processes
+                            .insert(instance_id.clone(), runtime_record.clone());
+                    }
+                } else {
+                    remove_runtime_process_record(&app, &runtime_record);
+                }
+                return Err(error.to_string());
+            }
+        }
+    };
 
     #[cfg(unix)]
     let mut command = if profile.use_sudo {
@@ -2308,7 +3048,8 @@ fn spawn_profile_process(
             .arg("-n")
             .arg(installed_helper_path())
             .arg("run")
-            .arg(&config_path);
+            .arg(&config_path)
+            .arg(format!("--owner-attempt={instance_id}"));
         command
     } else {
         let mut command = Command::new(&bundled_engine);
@@ -2325,34 +3066,87 @@ fn spawn_profile_process(
     };
 
     command
-        .stdin(Stdio::null())
+        .stdin(if private_control {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if private_control {
+        command.arg(format!("--manager-control={instance_id}"));
+    }
 
     #[cfg(unix)]
     command.process_group(0);
+    #[cfg(unix)]
+    let launch_gate = if gated_launch {
+        match openfortivpn_manager_core::supervisor::LaunchGate::prepare(&mut command) {
+            Ok(gate) => Some(gate),
+            Err(error) => {
+                finish_unstarted_process(&app, &runtime_record, &mut network_lease)?;
+                return Err(error.to_string());
+            }
+        }
+    } else {
+        None
+    };
 
-    let mut child = command.spawn().map_err(|error| {
-        #[cfg(unix)]
-        remove_runtime_process_record(&app, &runtime_record);
-        #[cfg(windows)]
-        let _ = fs::remove_file(&config_path);
-        format!("无法启动 {}：{error}", bundled_engine.display())
-    })?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            finish_unstarted_process(&app, &runtime_record, &mut network_lease)?;
+            return Err(format!("无法启动 {}：{error}", bundled_engine.display()));
+        }
+    };
     let stdout = child.stdout.take();
+    drop(command);
     let stderr = child.stderr.take();
     let pid = child.id();
+    let input_result = child
+        .stdin
+        .take()
+        .map(|pipe| openfortivpn_manager_core::private_input::PrivateInput::new(pipe).map(Arc::new))
+        .transpose();
+    let input = match input_result {
+        Ok(input) => input,
+        Err(error) => {
+            runtime_record.pid = pid;
+            runtime_record.process_group_id = pid;
+            let _ = persist_runtime_process_record(&app, &runtime_record);
+            #[cfg(unix)]
+            let stopped =
+                terminate_unregistered_process_group(pid, profile.use_sudo, &process_engine);
+            #[cfg(windows)]
+            let stopped = child.kill().is_ok();
+            reap_unregistered_child(child, stopped);
+            if let Ok(mut store) = state.store.lock() {
+                store
+                    .stale_processes
+                    .insert(instance_id.clone(), runtime_record);
+            }
+            return Err(format!("无法建立私有引擎通道：{error}；恢复记录已保留"));
+        }
+    };
 
     #[cfg(unix)]
     {
         runtime_record.pid = pid;
         runtime_record.process_group_id = pid;
-        if let Err(message) = persist_runtime_process_record(&app, &runtime_record) {
+        let persisted = persist_runtime_process_record(&app, &runtime_record).and_then(|_| {
+            if let Some(lease) = network_lease.as_mut() {
+                lease.bind_process_group(pid).map_err(|e| e.to_string())?;
+            }
+            if let Some(gate) = launch_gate {
+                gate.release().map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        });
+        if let Err(message) = persisted {
             let stopped =
                 terminate_unregistered_process_group(pid, profile.use_sudo, &process_engine);
-            if stopped {
-                remove_runtime_process_record(&app, &runtime_record);
-            } else if let Ok(mut store) = app.state::<AppState>().store.lock() {
+            reap_unregistered_child(child, stopped);
+            if let Ok(mut store) = app.state::<AppState>().store.lock() {
                 store
                     .stale_processes
                     .insert(instance_id.clone(), runtime_record.clone());
@@ -2368,10 +3162,58 @@ fn spawn_profile_process(
         }
     }
 
-    let child = Arc::new(Mutex::new(child));
+    #[cfg(windows)]
+    {
+        runtime_record.pid = pid;
+        runtime_record.process_group_id = pid;
+        let captured =
+            openfortivpn_manager_core::windows_process::inspect(pid).map_err(|e| e.to_string());
+        let persisted = match captured {
+            Ok(Some(identity)) => {
+                runtime_record.process_identity = Some(identity.clone());
+                persist_runtime_process_record(&app, &runtime_record)
+                    .map(|_| ())
+                    .and_then(|_| {
+                        network_lease
+                            .as_mut()
+                            .ok_or_else(|| "系统网络占用未登记".to_string())?
+                            .bind_process(identity)
+                            .map_err(|error| error.to_string())
+                    })
+            }
+            Ok(None) => Err("引擎在进程身份登记前已退出".into()),
+            Err(error) => Err(error),
+        };
+        if let Err(message) = persisted {
+            // The Child handle still binds this process even if its numeric
+            // PID was reused. Never kill using the persisted PID here.
+            let _ = child.kill();
+            reap_unregistered_child(child, true);
+            if let Ok(mut store) = app.state::<AppState>().store.lock() {
+                store
+                    .stale_processes
+                    .insert(instance_id.clone(), runtime_record);
+            }
+            return Err(format!("{message}；运行记录已保留，需要确认网络恢复"));
+        }
+    }
+
+    let child = OwnedProcess::new(child);
+    let attempt_sequence = state
+        .store
+        .lock()
+        .map_err(|_| "内部运行状态已损坏")?
+        .instances
+        .values()
+        .filter(|instance| instance.view.profile_id == profile.id)
+        .map(|instance| instance.view.attempt_sequence)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
     let view = InstanceView {
         id: instance_id.clone(),
         profile_generation,
+        attempt_sequence,
         profile_id: profile.id.clone(),
         profile_name: profile.name.clone(),
         adapter_name,
@@ -2404,33 +3246,55 @@ fn spawn_profile_process(
             instance_id.clone(),
             ManagedInstance {
                 view: view.clone(),
+                source_profile: profile.clone(),
                 child: child.clone(),
+                input,
                 process_running: true,
+                lifecycle: openfortivpn_manager_core::lifecycle::EngineLifecycle::for_attempt(
+                    &instance_id,
+                    private_control,
+                ),
                 user_requested_stop: false,
                 reconnect_blocked: false,
                 failure_message: None,
             },
         );
+        prune_finished_instances(&mut store);
         cancelled
     };
 
     emit_instance(&app, &view);
+    let mut readers = Vec::new();
     if let Some(stdout) = stdout {
-        spawn_stream_reader(stdout, app.clone(), instance_id.clone(), "stdout");
+        readers.push(spawn_stream_reader(
+            stdout,
+            app.clone(),
+            instance_id.clone(),
+            "stdout",
+        ));
     }
     if let Some(stderr) = stderr {
-        spawn_stream_reader(stderr, app.clone(), instance_id.clone(), "stderr");
+        readers.push(spawn_stream_reader(
+            stderr,
+            app.clone(),
+            instance_id.clone(),
+            "stderr",
+        ));
     }
     spawn_process_monitor(
         app.clone(),
         instance_id,
         child,
-        config_path,
-        process_record_path,
+        ProcessResources {
+            config_path,
+            process_record_path,
+            network_lease,
+        },
+        readers,
     );
 
     if cancelled_before_registration {
-        stop_instance(
+        stop_instance_impl(
             app.clone(),
             app.state::<AppState>(),
             view.id.clone(),
@@ -2463,12 +3327,15 @@ fn clear_missing_stored_password(app: &AppHandle, profile_id: &str) -> Result<()
     let mut unknown_secret_profiles = store.unknown_secret_profiles.clone();
     stored_secret_profiles.remove(profile_id);
     unknown_secret_profiles.remove(profile_id);
-    persist_profiles(
-        app,
-        &store.profiles,
-        &stored_secret_profiles,
-        &unknown_secret_profiles,
-    )?;
+    let profiles = store.profiles.clone();
+    commit_profile_metadata(&mut store, || {
+        persist_profiles(
+            app,
+            &profiles,
+            &stored_secret_profiles,
+            &unknown_secret_profiles,
+        )
+    })?;
     store.stored_secret_profiles = stored_secret_profiles;
     store.unknown_secret_profiles = unknown_secret_profiles;
     store.secrets.remove(profile_id);
@@ -2513,53 +3380,113 @@ fn resolve_profile_password(
     Ok(password)
 }
 
+fn desktop_connect_admission(
+    store: &RuntimeStore,
+    profile_id: &str,
+    shutting_down: bool,
+    origin: StartOrigin,
+) -> Result<Option<InstanceView>, openfortivpn_manager_core::ControlError> {
+    use openfortivpn_manager_core::connection_service::{
+        self, ConnectDecision, ConnectFacts, ConnectionOwner, OwnershipState,
+    };
+    use openfortivpn_manager_core::{ControlError, ErrorCode};
+    let owners = store
+        .starting_profiles
+        .iter()
+        .map(|id| ConnectionOwner {
+            profile_id: id,
+            instance_id: None,
+            state: OwnershipState::StartingReservation,
+        })
+        .chain(store.instances.values().filter_map(|instance| {
+            let state = if instance.lifecycle.cleanup_failed() {
+                OwnershipState::RecoveryRequired
+            } else if !instance.process_running {
+                return None;
+            } else if instance.user_requested_stop || instance.view.status == "disconnecting" {
+                OwnershipState::Stopping
+            } else {
+                OwnershipState::Healthy
+            };
+            Some(ConnectionOwner {
+                profile_id: &instance.view.profile_id,
+                instance_id: Some(&instance.view.id),
+                state,
+            })
+        }))
+        .collect::<Vec<_>>();
+    let origin = if reuse_running_instance_for_start(origin) {
+        connection_service::StartOrigin::User
+    } else {
+        match origin {
+            StartOrigin::Startup => connection_service::StartOrigin::Startup,
+            _ => connection_service::StartOrigin::Automatic,
+        }
+    };
+    let facts = ConnectFacts {
+        profile_id,
+        profile_exists: store.profiles.contains_key(profile_id),
+        shutting_down,
+        repository_recovery_required: store.repository_recovery_required,
+        repository_restoring: store.restoring_repository,
+        profile_mutating: store.mutating_profiles.contains(profile_id),
+        orphaned_recovery: !store.stale_processes.is_empty(),
+        owners: &owners,
+    };
+    match connection_service::admit(&facts, origin)? {
+        ConnectDecision::Reserve => Ok(None),
+        ConnectDecision::Reuse(id) => store
+            .instances
+            .values()
+            .find(|instance| instance.view.id == id && instance.view.profile_id == profile_id)
+            .map(|instance| Some(instance.view.clone()))
+            .ok_or_else(|| {
+                ControlError::new(
+                    ErrorCode::RecoveryRequired,
+                    "published connection ownership is inconsistent",
+                )
+            }),
+    }
+}
+
+fn desktop_connect_error_message(error: openfortivpn_manager_core::ControlError) -> String {
+    use openfortivpn_manager_core::ErrorCode;
+    match error.code {
+        ErrorCode::InvalidInput => "连接配置标识无效",
+        ErrorCode::ShuttingDown => "应用正在退出，不能启动新的连接",
+        ErrorCode::ProfileNotFound => "找不到指定配置",
+        ErrorCode::ProfileBusy => "该配置正在连接、停止或修改，请稍后重试",
+        ErrorCode::NetworkConflict => "网络资源正在被其他配置使用，请先断开该连接",
+        ErrorCode::RecoveryRequired => "存在未确认清理的进程、网络资源或配置存储，请先完成恢复",
+        _ => "连接准入失败，请检查配置及运行状态",
+    }
+    .to_string()
+}
+
 fn start_profile_impl(
     app: AppHandle,
     profile_id: String,
     origin: StartOrigin,
 ) -> Result<InstanceView, String> {
-    if app.state::<AppState>().shutting_down.load(Ordering::SeqCst) {
-        return Err("应用正在退出，不能启动新的连接".to_string());
-    }
     let (profile, session_password, password_stored, profile_generation) = {
         let state = app.state::<AppState>();
         let mut store = state
             .store
             .lock()
             .map_err(|_| "内部运行状态已损坏".to_string())?;
-        if store.mutating_profiles.contains(&profile_id) {
-            return Err("该配置正在编辑或删除，请稍后重试".to_string());
-        }
-        #[cfg(unix)]
-        if store
-            .stale_processes
-            .values()
-            .any(|record| record.profile_id.is_empty() || record.profile_id == profile_id)
+        if let Some(instance) = desktop_connect_admission(
+            &store,
+            &profile_id,
+            state.shutting_down.load(Ordering::SeqCst),
+            origin,
+        )
+        .map_err(desktop_connect_error_message)?
         {
-            return Err(
-                "检测到上次异常退出遗留的 VPN 进程，请先安装系统 helper 完成清理".to_string(),
-            );
+            return Ok(instance);
         }
-        if let Some(instance) = store
-            .instances
-            .values()
-            .filter(|instance| instance.view.profile_id == profile_id && instance.process_running)
-            .max_by_key(|instance| {
-                (
-                    instance.view.profile_generation,
-                    instance.view.started_at,
-                    instance.view.revision,
-                )
-            })
-        {
-            if reuse_running_instance_for_start(origin) {
-                return Ok(instance.view.clone());
-            }
-            return Err("该配置已有连接".to_string());
-        }
-        if store.starting_profiles.contains(&profile_id) {
-            return Err("该配置正在建立连接，请勿重复点击".to_string());
-        }
+
+        // The shared admission and this reservation hold the same runtime
+        // lock; credential workers cannot start an unreserved connection.
         let profile = store
             .profiles
             .get(&profile_id)
@@ -2588,12 +3515,42 @@ fn start_profile_impl(
 }
 
 #[tauri::command]
-fn start_profile(app: AppHandle, profile_id: String) -> Result<InstanceView, String> {
-    start_profile_impl(app, profile_id, StartOrigin::User)
+async fn start_profile(app: AppHandle, profile_id: String) -> Result<InstanceView, String> {
+    run_profile_command(app, profile_id.clone(), move |app| {
+        start_profile_impl(app, profile_id, StartOrigin::User).map_err(Into::into)
+    })
+    .await
+    .map_err(|error| error.message)
 }
 
 #[tauri::command]
-fn stop_instance(
+async fn stop_instance(
+    app: AppHandle,
+    instance_id: String,
+    profile_id: Option<String>,
+) -> Result<(), String> {
+    let profile = {
+        let state = app.state::<AppState>();
+        let mut store = lock_store(&state)?;
+        let profile = store
+            .instances
+            .get(&instance_id)
+            .map(|i| i.view.profile_id.clone())
+            .or(profile_id.clone())
+            .ok_or("找不到指定连接实例")?;
+        // Cancel intent immediately, including a credential worker that has
+        // not registered its child yet. The mailbox still serializes effects.
+        bump_reconnect_generation(&mut store, &profile);
+        profile
+    };
+    run_profile_command(app, profile, move |app| {
+        stop_instance_impl(app.clone(), app.state(), instance_id, profile_id).map_err(Into::into)
+    })
+    .await
+    .map_err(|e| e.message)
+}
+
+fn stop_instance_impl(
     app: AppHandle,
     state: State<'_, AppState>,
     instance_id: String,
@@ -2636,7 +3593,7 @@ fn stop_instance(
         return Ok(());
     }
 
-    let (_child, pid, use_sudo, previous_status) = {
+    let (child, pid, use_sudo, previous_status) = {
         let store = lock_store(&state)?;
         let profile_id = store
             .instances
@@ -2659,6 +3616,24 @@ fn stop_instance(
             instance.view.status.clone(),
         )
     };
+
+    {
+        let mut store = lock_store(&state)?;
+        if let Some(instance) = store.instances.get_mut(&instance_id) {
+            instance.user_requested_stop = true;
+            if let Some(input) = &instance.input {
+                input.cancel();
+            }
+            let profile = instance.view.profile_id.clone();
+            store.challenges.cancel_attempt(&profile, &instance_id);
+        }
+    }
+    // Serialize against the monitor's wait/reap while sending a signal. A
+    // reaped PID can be reused during output draining and must not be signalled.
+    let mut owned_child = child.lock().map_err(|_| "进程所有权状态已损坏")?;
+    if owned_child.try_wait().map_err(|e| e.to_string())?.is_some() {
+        return Ok(());
+    }
 
     #[cfg(unix)]
     if use_sudo && !sudo_engine_ready(&app) {
@@ -2711,6 +3686,9 @@ fn stop_instance(
                 .arg(&process_group)
                 .status()
         };
+        // The monitor must be able to reap before checking whether the process
+        // group is gone. Keep ownership locked only through signal delivery.
+        drop(owned_child);
         let signal_sent = matches!(&result, Ok(status) if status.success());
         if !signal_sent {
             let process_already_stopped = {
@@ -2755,8 +3733,10 @@ fn stop_instance(
 
     #[cfg(windows)]
     {
-        let _ = (_child, use_sudo);
-        if let Err(error) = send_windows_ctrl_break(pid) {
+        let _ = use_sudo;
+        let result = send_windows_ctrl_break(pid);
+        drop(owned_child);
+        if let Err(error) = result {
             let process_already_stopped = {
                 let store = lock_store(&state)?;
                 store
@@ -2785,7 +3765,32 @@ fn profile_is_active_or_starting(app: &AppHandle, profile_id: &str) -> bool {
         .store
         .lock()
         .map(|store| profile_connection_in_progress(&store, profile_id))
-        .unwrap_or(false)
+        .unwrap_or(true)
+}
+
+#[tauri::command]
+async fn await_profile_stopped(
+    app: AppHandle,
+    profile_id: String,
+    instance_id: String,
+) -> Result<InstanceView, String> {
+    run_profile_command(app, profile_id.clone(), move |app| {
+        wait_for_profile_to_stop(&app, &profile_id)?;
+        let state = app.state::<AppState>();
+        let store = lock_store(&state)?;
+        let instance = store
+            .instances
+            .get(&instance_id)
+            .ok_or("证书提示对应的连接已不存在")?;
+        if instance.view.profile_id != profile_id
+            || profile_connection_in_progress(&store, &profile_id)
+        {
+            return Err("证书提示对应的连接已改变或尚未完成清理".into());
+        }
+        Ok(instance.view.clone())
+    })
+    .await
+    .map_err(|error| error.message)
 }
 
 fn wait_for_profile_to_stop(app: &AppHandle, profile_id: &str) -> Result<(), String> {
@@ -2817,7 +3822,7 @@ fn disconnect_profile_impl(app: AppHandle, profile_id: String) -> Result<(), Str
         })
         .map(|instance| instance.view.id.clone())
         .unwrap_or_default();
-    stop_instance(
+    stop_instance_impl(
         app.clone(),
         app.state::<AppState>(),
         instance_id,
@@ -2832,12 +3837,16 @@ fn reconnect_profile_impl(app: AppHandle, profile_id: String) -> Result<Instance
 }
 
 #[tauri::command]
-fn reconnect_profile(app: AppHandle, profile_id: String) -> Result<InstanceView, String> {
-    reconnect_profile_impl(app, profile_id)
+async fn reconnect_profile(app: AppHandle, profile_id: String) -> Result<InstanceView, String> {
+    run_profile_command(app, profile_id.clone(), move |app| {
+        reconnect_profile_impl(app, profile_id).map_err(Into::into)
+    })
+    .await
+    .map_err(|e| e.message)
 }
 
 #[tauri::command]
-fn disconnect_all(app: AppHandle) -> Result<(), String> {
+async fn disconnect_all(app: AppHandle) -> Result<(), String> {
     let profile_ids = app
         .state::<AppState>()
         .store
@@ -2850,8 +3859,12 @@ fn disconnect_all(app: AppHandle) -> Result<(), String> {
     let mut errors = Vec::new();
     for profile_id in profile_ids {
         if profile_is_active_or_starting(&app, &profile_id) {
-            if let Err(message) = disconnect_profile_impl(app.clone(), profile_id) {
-                errors.push(message);
+            if let Err(error) = run_profile_command(app.clone(), profile_id.clone(), move |app| {
+                disconnect_profile_impl(app, profile_id).map_err(Into::into)
+            })
+            .await
+            {
+                errors.push(error.message);
             }
         }
     }
@@ -2897,6 +3910,7 @@ fn send_windows_ctrl_break(pid: u32) -> Result<(), String> {
 #[tauri::command]
 fn export_profile_config(state: State<'_, AppState>, profile_id: String) -> Result<String, String> {
     let store = lock_store(&state)?;
+    ensure_repository_ready(&store)?;
     let profile = store
         .profiles
         .get(&profile_id)
@@ -2920,8 +3934,16 @@ fn attempt_auto_connect(app: &AppHandle, profile_id: String, profile_name: Strin
     if profile_has_active_instance(app, &profile_id) {
         return;
     }
-    if let Err(message) = start_profile_impl(app.clone(), profile_id.clone(), StartOrigin::Startup)
-    {
+    let queued_profile = profile_id.clone();
+    let start = tauri::async_runtime::block_on(run_profile_command(
+        app.clone(),
+        profile_id.clone(),
+        move |app| {
+            start_profile_impl(app, queued_profile, StartOrigin::Startup).map_err(Into::into)
+        },
+    ))
+    .map_err(|e| e.message);
+    if let Err(message) = start {
         let _ = app.emit(
             "vpn-autoconnect-error",
             AutoConnectError {
@@ -3049,6 +4071,9 @@ fn load_startup_credentials(
         if let Ok(mut store) = app.state::<AppState>().store.lock() {
             let mut metadata_changed = false;
             for (profile, was_unknown, result) in results {
+                if store.repository_recovery_required || store.restoring_repository {
+                    continue;
+                }
                 let was_stored = stored_secret_profiles.contains(&profile.id);
                 if !startup_credential_result_is_current(&store, &profile, was_unknown, was_stored)
                 {
@@ -3094,12 +4119,12 @@ fn load_startup_credentials(
                 }
             }
             if metadata_changed {
-                let _ = persist_profiles(
-                    &app,
-                    &store.profiles,
-                    &store.stored_secret_profiles,
-                    &store.unknown_secret_profiles,
-                );
+                let profiles = store.profiles.clone();
+                let stored = store.stored_secret_profiles.clone();
+                let unknown = store.unknown_secret_profiles.clone();
+                let _ = commit_profile_metadata(&mut store, || {
+                    persist_profiles(&app, &profiles, &stored, &unknown)
+                });
             }
         }
 
@@ -3342,19 +4367,27 @@ fn emit_tray_action_error(app: &AppHandle, profile_id: Option<String>, message: 
 }
 
 fn run_tray_profile_action(app: AppHandle, action: TrayAction) {
-    thread::spawn(move || {
+    tauri::async_runtime::spawn(async move {
         let (profile_id, result) = match action {
             TrayAction::Connect(profile_id) => {
-                let result = start_profile_impl(app.clone(), profile_id.clone(), StartOrigin::User)
+                let result = start_profile(app.clone(), profile_id.clone())
+                    .await
                     .map(|_| ());
                 (profile_id, result)
             }
             TrayAction::Disconnect(profile_id) => {
-                let result = disconnect_profile_impl(app.clone(), profile_id.clone());
+                let profile = profile_id.clone();
+                let result = run_profile_command(app.clone(), profile_id.clone(), move |app| {
+                    disconnect_profile_impl(app, profile).map_err(Into::into)
+                })
+                .await
+                .map_err(|e| e.message);
                 (profile_id, result)
             }
             TrayAction::Reconnect(profile_id) => {
-                let result = reconnect_profile_impl(app.clone(), profile_id.clone()).map(|_| ());
+                let result = reconnect_profile(app.clone(), profile_id.clone())
+                    .await
+                    .map(|_| ());
                 (profile_id, result)
             }
         };
@@ -3388,8 +4421,8 @@ fn handle_tray_menu_event(app: &AppHandle, id: &str) {
         }
         TRAY_DISCONNECT_ALL_ID => {
             let app = app.clone();
-            thread::spawn(move || {
-                if let Err(message) = disconnect_all(app.clone()) {
+            tauri::async_runtime::spawn(async move {
+                if let Err(message) = disconnect_all(app.clone()).await {
                     emit_tray_action_error(&app, None, message);
                 }
             });
@@ -3489,7 +4522,8 @@ fn shutdown_connections(app: &AppHandle) -> Result<(), String> {
 
     let mut stop_errors = Vec::new();
     for instance_id in instance_ids {
-        if let Err(message) = stop_instance(app.clone(), app.state::<AppState>(), instance_id, None)
+        if let Err(message) =
+            stop_instance_impl(app.clone(), app.state::<AppState>(), instance_id, None)
         {
             stop_errors.push(message);
         }
@@ -3537,6 +4571,14 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
         .setup(|app| {
+            // The UI single-instance plugin is not the repository authority:
+            // renamed/development binaries and offline tools share this lock.
+            let guard = profile_repository::acquire_ownership(&app_data_dir(app.handle())?)
+                .map_err(std::io::Error::other)?;
+            *app.state::<AppState>()
+                .repository_guard
+                .lock()
+                .map_err(|_| std::io::Error::other("配置目录锁状态已损坏"))? = Some(guard);
             let desktop_preferences =
                 load_desktop_preferences(app.handle()).unwrap_or_else(|message| {
                     eprintln!("OpenFortiVPN desktop settings were reset: {message}");
@@ -3548,11 +4590,13 @@ pub fn run() {
                     format!("拒绝忽略损坏的 VPN 配置：{message}"),
                 )
             })?;
+            recover_credential_intents(app.handle(), &loaded_profiles)
+                .map_err(std::io::Error::other)?;
             let startup_profiles = loaded_profiles.profiles.clone();
             let startup_stored_secret_profiles = loaded_profiles.stored_secret_profiles.clone();
             let startup_unknown_secret_profiles = loaded_profiles.unknown_secret_profiles.clone();
-            #[cfg(unix)]
-            let stale_processes = load_stale_runtime_processes(app.handle()).unwrap_or_default();
+            let stale_processes =
+                load_stale_runtime_processes(app.handle()).map_err(std::io::Error::other)?;
 
             let state = app.state::<AppState>();
             if let Ok(mut preferences) = state.desktop_preferences.lock() {
@@ -3562,10 +4606,7 @@ pub fn run() {
                 store.profiles = loaded_profiles.profiles;
                 store.stored_secret_profiles = loaded_profiles.stored_secret_profiles;
                 store.unknown_secret_profiles = loaded_profiles.unknown_secret_profiles;
-                #[cfg(unix)]
-                {
-                    store.stale_processes = stale_processes;
-                }
+                store.stale_processes = stale_processes;
             }
             setup_tray(app)?;
             refresh_privilege_status(app.handle(), false);
@@ -3597,18 +4638,28 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            list_recovery_records,
+            repository_recovery_required,
+            recover_profile_repository,
+            diagnostic_report,
+            backup::backup_profiles,
+            backup::restore_profiles,
+            acknowledge_recovery,
             list_profiles,
             get_desktop_preferences,
             update_desktop_preferences,
             save_profile,
             delete_profile,
             list_instances,
+            authentication::authentication_challenges,
+            authentication::respond_to_authentication,
             list_logs,
             engine_info,
             privilege_status,
             unlock_privileges,
             start_profile,
             stop_instance,
+            await_profile_stopped,
             reconnect_profile,
             disconnect_all,
             quit_app,
@@ -3706,6 +4757,24 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reader_panic_or_io_failure_cannot_be_treated_as_clean_eof() {
+        use super::{drain_stream_readers, StreamReader};
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        for panic in [false, true] {
+            let join = std::thread::spawn(move || {
+                if panic {
+                    panic!("injected reader panic");
+                }
+                false
+            });
+            assert!(!drain_stream_readers(vec![StreamReader {
+                join,
+                cancelled: Arc::new(AtomicBool::new(false))
+            }]));
+        }
+    }
     use super::*;
 
     type ProfileMutator = fn(&mut VpnProfile);
@@ -3713,12 +4782,14 @@ mod tests {
     fn valid_profile() -> VpnProfile {
         VpnProfile {
             id: "profile-1".to_string(),
+            revision: 0,
             name: "Office VPN".to_string(),
             host: "vpn.example.com".to_string(),
             port: 443,
             username: "alice".to_string(),
             realm: "employees".to_string(),
             trusted_cert: "aB".repeat(32),
+            credential_ref: None,
             set_routes: true,
             set_dns: true,
             pppd_use_peerdns: false,
@@ -3772,7 +4843,8 @@ mod tests {
 
     #[test]
     fn profile_file_persists_credential_metadata_without_the_password() {
-        let profile = valid_profile();
+        let mut profile = valid_profile();
+        profile.trusted_cert = profile.trusted_cert.to_ascii_lowercase();
         let profiles = BTreeMap::from([(profile.id.clone(), profile.clone())]);
         let stored = HashSet::from([profile.id.clone()]);
 
@@ -3797,6 +4869,21 @@ mod tests {
 
         assert!(!loaded.stored_secret_profiles.contains(&profile.id));
         assert!(loaded.unknown_secret_profiles.contains(&profile.id));
+    }
+
+    #[test]
+    fn malformed_profile_files_never_silently_replace_profiles_or_credentials() {
+        let profile = valid_profile();
+        assert!(parse_profile_file(
+            &serde_json::to_string(&[profile.clone(), profile.clone()]).unwrap()
+        )
+        .is_err());
+        let mut unsafe_profile = profile.clone();
+        unsafe_profile.credential_ref = Some(REMOTE_TOKEN_PROFILE_ID.into());
+        assert!(parse_profile_file(&serde_json::to_string(&[unsafe_profile]).unwrap()).is_err());
+        let mut unsafe_profile = profile;
+        unsafe_profile.username = "a".repeat(65);
+        assert!(parse_profile_file(&serde_json::to_string(&[unsafe_profile]).unwrap()).is_err());
     }
 
     #[test]
@@ -3837,6 +4924,84 @@ mod tests {
         assert!(!startup_credential_result_is_current(
             &store, &profile, false, true
         ));
+    }
+
+    #[test]
+    fn uncertain_metadata_commit_blocks_stale_cache_until_disk_reload() {
+        let directory = std::env::temp_dir().join(format!("ofv-commit-test-{}", Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("profiles.json");
+        let mut old = valid_profile();
+        old.credential_ref = Some(format!("credential:{}", Uuid::new_v4()));
+        old.revision = 1;
+        let mut new = old.clone();
+        new.credential_ref = Some(format!("credential:{}", Uuid::new_v4()));
+        new.revision = 2;
+        let stored = HashSet::from([old.id.clone()]);
+        let mut store = RuntimeStore::default();
+        store.profiles.insert(old.id.clone(), old.clone());
+        store.stored_secret_profiles = stored.clone();
+        store
+            .secrets
+            .insert(old.id.clone(), "synthetic-old-session".into());
+        let new_profiles = BTreeMap::from([(new.id.clone(), new.clone())]);
+        let bytes = serialize_profile_file(&new_profiles, &stored, &HashSet::new()).unwrap();
+        assert!(commit_profile_metadata(&mut store, || {
+            openfortivpn_manager_core::atomic_file::write_private(&path, bytes.as_bytes()).unwrap();
+            Err("injected failure after replacement".into())
+        })
+        .is_err());
+        assert_eq!(store.profiles[&old.id].revision, 1);
+        assert!(ensure_repository_ready(&store).is_err());
+        assert!(
+            commit_profile_metadata(&mut store, || panic!("stale cache must never write")).is_err()
+        );
+        let loaded = parse_profile_file(&fs::read_to_string(&path).unwrap()).unwrap();
+        let candidates = [
+            old.credential_ref.clone().unwrap(),
+            new.credential_ref.clone().unwrap(),
+        ];
+        let gc = openfortivpn_manager_core::repository::credential_gc(
+            candidates.clone().into_iter(),
+            &credential_references(&loaded),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            gc.delete,
+            std::collections::BTreeSet::from([candidates[0].clone()])
+        );
+        apply_recovered_profiles(&mut store, loaded);
+        assert_eq!(store.profiles[&new.id].revision, 2);
+        assert!(store.secrets.is_empty());
+        assert!(ensure_repository_ready(&store).is_ok());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn failed_precommit_write_keeps_repository_blocked_and_idle_recovery_preserves_old_ref() {
+        let mut store = RuntimeStore::default();
+        let old = valid_profile();
+        store.profiles.insert(old.id.clone(), old.clone());
+        assert!(commit_profile_metadata(&mut store, || Err("disk full".into())).is_err());
+        assert!(repository_is_idle(&store));
+        store.mutating_profiles.insert(old.id.clone());
+        assert!(!repository_is_idle(&store));
+        store.mutating_profiles.clear();
+        store.starting_profiles.insert(old.id.clone());
+        assert!(!repository_is_idle(&store));
+        store.starting_profiles.clear();
+        store.restoring_repository = true;
+        assert!(!repository_is_idle(&store));
+        store.restoring_repository = false;
+        apply_recovered_profiles(
+            &mut store,
+            LoadedProfiles {
+                profiles: BTreeMap::from([(old.id.clone(), old)]),
+                stored_secret_profiles: HashSet::new(),
+                unknown_secret_profiles: HashSet::new(),
+            },
+        );
+        assert!(commit_profile_metadata(&mut store, || Ok(())).is_ok());
     }
 
     #[test]
@@ -3983,27 +5148,19 @@ mod tests {
         )
         .expect_err("password line breaks must be rejected");
 
-        assert_eq!(error, "密码 不能包含换行符");
+        assert!(error.contains("line breaks"));
     }
 
     #[test]
     fn rejects_passwords_the_engine_would_silently_change_or_truncate() {
-        assert_eq!(
-            validate_password(" secret"),
-            Err("VPN 密码不能以空白字符开头或结尾".to_string())
-        );
-        assert_eq!(
-            validate_password("secret "),
-            Err("VPN 密码不能以空白字符开头或结尾".to_string())
-        );
-        assert_eq!(
-            validate_password("sec\0ret"),
-            Err("VPN 密码不能包含 NUL 字符".to_string())
-        );
-        assert_eq!(
-            validate_password(&"x".repeat(ENGINE_PASSWORD_MAX_BYTES + 1)),
-            Err(format!("VPN 密码不能超过 {ENGINE_PASSWORD_MAX_BYTES} 字节"))
-        );
+        for password in [
+            " secret".into(),
+            "secret ".into(),
+            "sec\0ret".into(),
+            "x".repeat(257),
+        ] {
+            assert!(validate_password(&password).is_err());
+        }
         assert_eq!(validate_password("correct horse battery staple"), Ok(()));
     }
 
@@ -4053,6 +5210,9 @@ mod tests {
         let event = EngineEvent {
             instance_id: "instance-1".to_string(),
             profile_id: "profile-1".to_string(),
+            profile_revision: 7,
+            host: "vpn.example.test".into(),
+            port: 443,
             payload: serde_json::json!({
                 "event": "cert_error",
                 "digest": "a".repeat(64),
@@ -4062,6 +5222,8 @@ mod tests {
         let value = serde_json::to_value(event).expect("engine event should serialize");
         assert_eq!(value["instanceId"], "instance-1");
         assert_eq!(value["profileId"], "profile-1");
+        assert_eq!(value["profileRevision"], 7);
+        assert_eq!(value["host"], "vpn.example.test");
         assert_eq!(value["payload"]["event"], "cert_error");
     }
 
@@ -4077,6 +5239,7 @@ mod tests {
         InstanceView {
             id: "instance-1".to_string(),
             profile_generation: 1,
+            attempt_sequence: 1,
             profile_id: "profile-1".to_string(),
             profile_name: "Office VPN".to_string(),
             adapter_name: "ofv-OfficeVPN-12345678".to_string(),
@@ -4161,6 +5324,177 @@ mod tests {
         ));
     }
 
+    fn desktop_admission_store() -> RuntimeStore {
+        let profile = valid_profile();
+        let mut store = RuntimeStore::default();
+        store.profiles.insert(profile.id.clone(), profile.clone());
+        #[cfg(unix)]
+        let mut child = Command::new("/usr/bin/true").spawn().unwrap();
+        #[cfg(windows)]
+        let mut child = Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        let mut view = instance_view_with_status("connected");
+        view.id = "admitted-attempt".into();
+        view.profile_id = profile.id;
+        store.instances.insert(
+            view.id.clone(),
+            ManagedInstance {
+                view,
+                source_profile: valid_profile(),
+                child: OwnedProcess::new(child),
+                input: None,
+                process_running: true,
+                lifecycle: Default::default(),
+                user_requested_stop: false,
+                reconnect_blocked: false,
+                failure_message: None,
+            },
+        );
+        store
+    }
+
+    #[test]
+    fn desktop_connect_admission_never_reuses_stopping_or_recovery_owners() {
+        use openfortivpn_manager_core::ErrorCode;
+        for gate in ["stop-request", "disconnecting", "recovery"] {
+            let mut store = desktop_admission_store();
+            let instance = store.instances.get_mut("admitted-attempt").unwrap();
+            let profile_id = instance.view.profile_id.clone();
+            let expected = match gate {
+                "stop-request" => {
+                    instance.user_requested_stop = true;
+                    ErrorCode::ProfileBusy
+                }
+                "disconnecting" => {
+                    instance.view.status = "disconnecting".into();
+                    ErrorCode::ProfileBusy
+                }
+                _ => {
+                    instance.process_running = false;
+                    instance.lifecycle.require_recovery();
+                    ErrorCode::RecoveryRequired
+                }
+            };
+            assert_eq!(
+                desktop_connect_admission(&store, &profile_id, false, StartOrigin::User)
+                    .unwrap_err()
+                    .code,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_connect_admission_applies_all_reservations_and_recovery_gates_before_reuse() {
+        use openfortivpn_manager_core::ErrorCode;
+        for gate in [
+            "repository",
+            "restore",
+            "mutation",
+            "stale-other",
+            "duplicate",
+            "pending-other",
+        ] {
+            let mut store = desktop_admission_store();
+            let profile_id = store.instances["admitted-attempt"].view.profile_id.clone();
+            let expected = match gate {
+                "repository" => {
+                    store.repository_recovery_required = true;
+                    ErrorCode::RecoveryRequired
+                }
+                "restore" => {
+                    store.restoring_repository = true;
+                    ErrorCode::ProfileBusy
+                }
+                "mutation" => {
+                    store.mutating_profiles.insert(profile_id.clone());
+                    ErrorCode::ProfileBusy
+                }
+                "stale-other" => {
+                    store.stale_processes.insert(
+                        "old".into(),
+                        RuntimeProcessRecord {
+                            instance_id: "old".into(),
+                            profile_id: "other".into(),
+                            pid: 0,
+                            process_group_id: 0,
+                            engine_path: "synthetic-engine".into(),
+                            config_path: String::new(),
+                            #[cfg(windows)]
+                            process_identity: None,
+                        },
+                    );
+                    ErrorCode::RecoveryRequired
+                }
+                "duplicate" => {
+                    store.starting_profiles.insert(profile_id.clone());
+                    ErrorCode::RecoveryRequired
+                }
+                _ => {
+                    store.starting_profiles.insert("other".into());
+                    ErrorCode::NetworkConflict
+                }
+            };
+            assert_eq!(
+                desktop_connect_admission(&store, &profile_id, false, StartOrigin::User)
+                    .unwrap_err()
+                    .code,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_connect_admission_only_reuses_healthy_user_intent() {
+        use openfortivpn_manager_core::ErrorCode;
+        let mut store = desktop_admission_store();
+        let profile_id = store.instances["admitted-attempt"].view.profile_id.clone();
+        assert_eq!(
+            desktop_connect_admission(&store, &profile_id, false, StartOrigin::User)
+                .unwrap()
+                .unwrap()
+                .id,
+            "admitted-attempt"
+        );
+        for origin in [StartOrigin::Startup, StartOrigin::AutoReconnect(7)] {
+            assert_eq!(
+                desktop_connect_admission(&store, &profile_id, false, origin)
+                    .unwrap_err()
+                    .code,
+                ErrorCode::ProfileBusy
+            );
+        }
+        assert_eq!(
+            desktop_connect_admission(&store, &profile_id, true, StartOrigin::User)
+                .unwrap_err()
+                .code,
+            ErrorCode::ShuttingDown
+        );
+        store.instances.clear();
+        store.starting_profiles.insert(profile_id.clone());
+        assert_eq!(
+            desktop_connect_admission(&store, &profile_id, false, StartOrigin::User)
+                .unwrap_err()
+                .code,
+            ErrorCode::ProfileBusy
+        );
+        store.starting_profiles.clear();
+        assert!(
+            desktop_connect_admission(&store, &profile_id, false, StartOrigin::User)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            desktop_connect_admission(&store, "missing", false, StartOrigin::User)
+                .unwrap_err()
+                .code,
+            ErrorCode::ProfileNotFound
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn local_vpn_credentials_are_private_and_round_trip() {
@@ -4177,7 +5511,7 @@ mod tests {
 
         let metadata = fs::symlink_metadata(&path).unwrap();
         assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
-        assert_eq!(load_local_credentials_file(&path).unwrap(), credentials);
+        assert_eq!(&*load_local_credentials_file(&path).unwrap(), &credentials);
 
         fs::remove_dir_all(directory).unwrap();
     }
@@ -4235,6 +5569,7 @@ mod tests {
                 view: InstanceView {
                     id: "instance-1".to_string(),
                     profile_generation: 8,
+                    attempt_sequence: 1,
                     profile_id: profile_id.clone(),
                     profile_name: "Office".to_string(),
                     adapter_name: "ofv-office".to_string(),
@@ -4246,8 +5581,11 @@ mod tests {
                     exit_code: Some(1),
                     revision: 1,
                 },
-                child: Arc::new(Mutex::new(test_child)),
+                source_profile: valid_profile(),
+                child: OwnedProcess::new(test_child),
+                input: None,
                 process_running: false,
+                lifecycle: Default::default(),
                 user_requested_stop: false,
                 reconnect_blocked: true,
                 failure_message: Some("failed".to_string()),
@@ -4351,11 +5689,12 @@ mod tests {
 
     #[test]
     fn retained_logs_are_bounded_filterable_and_chronological() {
-        let mut logs = VecDeque::new();
+        let mut logs = LogBuffer::default();
         for index in 0..=MAX_RETAINED_LOGS {
             retain_log(
                 &mut logs,
                 LogEvent {
+                    id: openfortivpn_manager_core::protocol::next_log_id(),
                     instance_id: if index % 2 == 0 { "a" } else { "b" }.to_string(),
                     stream: "stdout".to_string(),
                     line: format!("line-{index}"),

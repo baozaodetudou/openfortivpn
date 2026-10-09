@@ -1,0 +1,178 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from package-test.Dockerfile
+#1 transferring dockerfile: 423B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/golang:1.26.6-bookworm
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/debian:bookworm-slim
+#3 DONE 0.0s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B done
+#4 DONE 0.0s
+
+#5 [stage-1 1/3] FROM docker.io/library/debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+#5 resolve docker.io/library/debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 0.0s done
+#5 DONE 0.0s
+
+#6 [trust 1/1] FROM docker.io/library/golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36
+#6 resolve docker.io/library/golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36
+#6 resolve docker.io/library/golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 0.0s done
+#6 CACHED
+
+#5 [stage-1 1/3] FROM docker.io/library/debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+#5 CACHED
+
+#7 [stage-1 2/3] COPY --from=trust /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+#7 DONE 0.0s
+
+#8 [stage-1 3/3] RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources     && apt-get update && apt-get install -y --no-install-recommends ppp systemd     && rm -rf /var/lib/apt/lists/*
+#8 2.254 Get:1 https://deb.debian.org/debian bookworm InRelease [151 kB]
+#8 4.917 Get:2 https://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+#8 5.224 Get:3 https://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]
+#8 5.428 Get:4 https://deb.debian.org/debian bookworm/main amd64 Packages [8790 kB]
+#8 125.9 Get:5 https://deb.debian.org/debian bookworm-updates/main amd64 Packages [6924 B]
+#8 126.1 Get:6 https://deb.debian.org/debian-security bookworm-security/main amd64 Packages [349 kB]
+#8 128.2 Fetched 9388 kB in 2min 8s (73.4 kB/s)
+#8 128.2 Reading package lists...
+#8 128.9 Reading package lists...
+#8 129.6 Building dependency tree...
+#8 129.7 Reading state information...
+#8 129.9 The following additional packages will be installed:
+#8 129.9   dmsetup libapparmor1 libargon2-1 libcryptsetup12 libdbus-1-3
+#8 129.9   libdevmapper1.02.1 libfdisk1 libip4tc2 libjson-c5 libkmod2 libncursesw6
+#8 129.9   libpcap0.8 libproc2-0 libssl3 libsystemd-shared procps
+#8 129.9 Suggested packages:
+#8 129.9   systemd-container systemd-homed systemd-userdbd systemd-boot
+#8 129.9   systemd-resolved libfido2-1 libqrencode4 libtss2-esys-3.0.2-0 libtss2-mu0
+#8 129.9   libtss2-rc0 polkitd | policykit-1
+#8 129.9 Recommended packages:
+#8 129.9   dbus libgpm2 psmisc default-dbus-system-bus | dbus-system-bus
+#8 129.9   systemd-timesyncd | time-daemon
+#8 130.0 The following NEW packages will be installed:
+#8 130.0   dmsetup libapparmor1 libargon2-1 libcryptsetup12 libdbus-1-3
+#8 130.0   libdevmapper1.02.1 libfdisk1 libip4tc2 libjson-c5 libkmod2 libncursesw6
+#8 130.0   libpcap0.8 libproc2-0 libssl3 libsystemd-shared ppp procps systemd
+#8 131.3 0 upgraded, 18 newly installed, 0 to remove and 4 not upgraded.
+#8 131.3 Need to get 9220 kB of archives.
+#8 131.3 After this operation, 28.7 MB of additional disk space will be used.
+#8 131.3 Get:1 https://deb.debian.org/debian-security bookworm-security/main amd64 libssl3 amd64 3.0.22-1~deb12u1 [2039 kB]
+#8 158.7 Get:2 https://deb.debian.org/debian bookworm/main amd64 libargon2-1 amd64 0~20171227-0.3+deb12u1 [19.4 kB]
+#8 158.9 Get:3 https://deb.debian.org/debian bookworm/main amd64 dmsetup amd64 2:1.02.185-2 [82.0 kB]
+#8 159.7 Get:4 https://deb.debian.org/debian bookworm/main amd64 libdevmapper1.02.1 amd64 2:1.02.185-2 [133 kB]
+#8 160.6 Get:5 https://deb.debian.org/debian bookworm/main amd64 libjson-c5 amd64 0.16-2 [44.1 kB]
+#8 161.3 Get:6 https://deb.debian.org/debian bookworm/main amd64 libcryptsetup12 amd64 2:2.6.1-4~deb12u2 [223 kB]
+#8 163.3 Get:7 https://deb.debian.org/debian bookworm/main amd64 libfdisk1 amd64 2.38.1-5+deb12u3 [194 kB]
+#8 165.4 Get:8 https://deb.debian.org/debian bookworm/main amd64 libkmod2 amd64 30+20221128-1 [57.9 kB]
+#8 166.1 Get:9 https://deb.debian.org/debian bookworm/main amd64 libapparmor1 amd64 3.0.8-3 [41.2 kB]
+#8 167.0 Get:10 https://deb.debian.org/debian bookworm/main amd64 libip4tc2 amd64 1.8.9-2 [19.0 kB]
+#8 167.3 Get:11 https://deb.debian.org/debian bookworm/main amd64 libsystemd-shared amd64 252.39-1~deb12u2 [1696 kB]
+#8 191.8 Get:12 https://deb.debian.org/debian bookworm/main amd64 systemd amd64 252.39-1~deb12u2 [3044 kB]
+#8 230.3 Get:13 https://deb.debian.org/debian bookworm/main amd64 libncursesw6 amd64 6.4-4 [134 kB]
+#8 234.0 Get:14 https://deb.debian.org/debian bookworm/main amd64 libproc2-0 amd64 2:4.0.2-3 [62.8 kB]
+#8 236.2 Get:15 https://deb.debian.org/debian bookworm/main amd64 procps amd64 2:4.0.2-3 [709 kB]
+#8 249.8 Get:16 https://deb.debian.org/debian bookworm/main amd64 libdbus-1-3 amd64 1.14.10-1~deb12u1 [201 kB]
+#8 252.7 Get:17 https://deb.debian.org/debian bookworm/main amd64 libpcap0.8 amd64 1.10.3-1 [157 kB]
+#8 256.8 Get:18 https://deb.debian.org/debian bookworm/main amd64 ppp amd64 2.4.9-1+1.1+b1 [364 kB]
+#8 263.0 debconf: delaying package configuration, since apt-utils is not installed
+#8 263.1 Fetched 9220 kB in 2min 13s (69.5 kB/s)
+#8 263.1 Selecting previously unselected package libssl3:amd64.
+#8 263.1 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 6096 files and directories currently installed.)
+#8 263.1 Preparing to unpack .../00-libssl3_3.0.22-1~deb12u1_amd64.deb ...
+#8 263.1 Unpacking libssl3:amd64 (3.0.22-1~deb12u1) ...
+#8 263.3 Selecting previously unselected package libargon2-1:amd64.
+#8 263.3 Preparing to unpack .../01-libargon2-1_0~20171227-0.3+deb12u1_amd64.deb ...
+#8 263.3 Unpacking libargon2-1:amd64 (0~20171227-0.3+deb12u1) ...
+#8 263.3 Selecting previously unselected package dmsetup.
+#8 263.3 Preparing to unpack .../02-dmsetup_2%3a1.02.185-2_amd64.deb ...
+#8 263.3 Unpacking dmsetup (2:1.02.185-2) ...
+#8 263.4 Selecting previously unselected package libdevmapper1.02.1:amd64.
+#8 263.4 Preparing to unpack .../03-libdevmapper1.02.1_2%3a1.02.185-2_amd64.deb ...
+#8 263.4 Unpacking libdevmapper1.02.1:amd64 (2:1.02.185-2) ...
+#8 263.4 Selecting previously unselected package libjson-c5:amd64.
+#8 263.4 Preparing to unpack .../04-libjson-c5_0.16-2_amd64.deb ...
+#8 263.4 Unpacking libjson-c5:amd64 (0.16-2) ...
+#8 263.4 Selecting previously unselected package libcryptsetup12:amd64.
+#8 263.4 Preparing to unpack .../05-libcryptsetup12_2%3a2.6.1-4~deb12u2_amd64.deb ...
+#8 263.4 Unpacking libcryptsetup12:amd64 (2:2.6.1-4~deb12u2) ...
+#8 263.5 Selecting previously unselected package libfdisk1:amd64.
+#8 263.5 Preparing to unpack .../06-libfdisk1_2.38.1-5+deb12u3_amd64.deb ...
+#8 263.5 Unpacking libfdisk1:amd64 (2.38.1-5+deb12u3) ...
+#8 263.5 Selecting previously unselected package libkmod2:amd64.
+#8 263.5 Preparing to unpack .../07-libkmod2_30+20221128-1_amd64.deb ...
+#8 263.5 Unpacking libkmod2:amd64 (30+20221128-1) ...
+#8 263.6 Selecting previously unselected package libapparmor1:amd64.
+#8 263.6 Preparing to unpack .../08-libapparmor1_3.0.8-3_amd64.deb ...
+#8 263.6 Unpacking libapparmor1:amd64 (3.0.8-3) ...
+#8 263.6 Selecting previously unselected package libip4tc2:amd64.
+#8 263.6 Preparing to unpack .../09-libip4tc2_1.8.9-2_amd64.deb ...
+#8 263.6 Unpacking libip4tc2:amd64 (1.8.9-2) ...
+#8 263.6 Selecting previously unselected package libsystemd-shared:amd64.
+#8 263.6 Preparing to unpack .../10-libsystemd-shared_252.39-1~deb12u2_amd64.deb ...
+#8 263.6 Unpacking libsystemd-shared:amd64 (252.39-1~deb12u2) ...
+#8 263.8 Setting up libssl3:amd64 (3.0.22-1~deb12u1) ...
+#8 263.8 Selecting previously unselected package systemd.
+#8 263.8 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 6182 files and directories currently installed.)
+#8 263.8 Preparing to unpack .../0-systemd_252.39-1~deb12u2_amd64.deb ...
+#8 263.8 Unpacking systemd (252.39-1~deb12u2) ...
+#8 264.1 Selecting previously unselected package libncursesw6:amd64.
+#8 264.1 Preparing to unpack .../1-libncursesw6_6.4-4_amd64.deb ...
+#8 264.1 Unpacking libncursesw6:amd64 (6.4-4) ...
+#8 264.1 Selecting previously unselected package libproc2-0:amd64.
+#8 264.1 Preparing to unpack .../2-libproc2-0_2%3a4.0.2-3_amd64.deb ...
+#8 264.1 Unpacking libproc2-0:amd64 (2:4.0.2-3) ...
+#8 264.2 Selecting previously unselected package procps.
+#8 264.2 Preparing to unpack .../3-procps_2%3a4.0.2-3_amd64.deb ...
+#8 264.2 Unpacking procps (2:4.0.2-3) ...
+#8 264.3 Selecting previously unselected package libdbus-1-3:amd64.
+#8 264.3 Preparing to unpack .../4-libdbus-1-3_1.14.10-1~deb12u1_amd64.deb ...
+#8 264.3 Unpacking libdbus-1-3:amd64 (1.14.10-1~deb12u1) ...
+#8 264.3 Selecting previously unselected package libpcap0.8:amd64.
+#8 264.3 Preparing to unpack .../5-libpcap0.8_1.10.3-1_amd64.deb ...
+#8 264.3 Unpacking libpcap0.8:amd64 (1.10.3-1) ...
+#8 264.4 Selecting previously unselected package ppp.
+#8 264.4 Preparing to unpack .../6-ppp_2.4.9-1+1.1+b1_amd64.deb ...
+#8 264.4 Unpacking ppp (2.4.9-1+1.1+b1) ...
+#8 264.5 Setting up libip4tc2:amd64 (1.8.9-2) ...
+#8 264.5 Setting up libapparmor1:amd64 (3.0.8-3) ...
+#8 264.5 Setting up libargon2-1:amd64 (0~20171227-0.3+deb12u1) ...
+#8 264.5 Setting up libdbus-1-3:amd64 (1.14.10-1~deb12u1) ...
+#8 264.5 Setting up libproc2-0:amd64 (2:4.0.2-3) ...
+#8 264.5 Setting up libncursesw6:amd64 (6.4-4) ...
+#8 264.5 Setting up libfdisk1:amd64 (2.38.1-5+deb12u3) ...
+#8 264.5 Setting up procps (2:4.0.2-3) ...
+#8 264.6 Setting up libjson-c5:amd64 (0.16-2) ...
+#8 264.6 Setting up libkmod2:amd64 (30+20221128-1) ...
+#8 264.6 Setting up libpcap0.8:amd64 (1.10.3-1) ...
+#8 264.6 Setting up libsystemd-shared:amd64 (252.39-1~deb12u2) ...
+#8 264.6 Setting up ppp (2.4.9-1+1.1+b1) ...
+#8 264.6 Setting up libdevmapper1.02.1:amd64 (2:1.02.185-2) ...
+#8 264.6 Setting up dmsetup (2:1.02.185-2) ...
+#8 264.6 Setting up libcryptsetup12:amd64 (2:2.6.1-4~deb12u2) ...
+#8 264.6 Setting up systemd (252.39-1~deb12u2) ...
+#8 264.7 Created symlink /etc/systemd/system/getty.target.wants/getty@tty1.service → /lib/systemd/system/getty@.service.
+#8 264.7 Created symlink /etc/systemd/system/multi-user.target.wants/remote-fs.target → /lib/systemd/system/remote-fs.target.
+#8 264.7 Created symlink /etc/systemd/system/sysinit.target.wants/systemd-pstore.service → /lib/systemd/system/systemd-pstore.service.
+#8 264.7 Initializing machine ID from random generator.
+#8 264.7 Creating group 'systemd-journal' with GID 999.
+#8 264.7 Creating group 'systemd-network' with GID 998.
+#8 264.7 Creating user 'systemd-network' (systemd Network Management) with UID 998 and GID 998.
+#8 264.8 Processing triggers for libc-bin (2.36-9+deb12u14) ...
+#8 DONE 264.9s
+
+#9 exporting to image
+#9 exporting layers
+#9 exporting layers 1.2s done
+#9 exporting manifest sha256:0f29a1d8504964bfd6e95712afc30ef408334fb1a1e08873a9a9c5bb20e45e5b 0.0s done
+#9 exporting config sha256:5dd2655e18ebfd4193e10ba1e3114fcb4bc734b2e5e9daf0c67b5d9f1fa7dbfa 0.0s done
+#9 exporting attestation manifest sha256:e06c1a8dfa2d4a5109cc77dc5f51c34d7ccdd820adafc0c31e436380a8e7b223 0.0s done
+#9 exporting manifest list sha256:d1779f80e63fdded121cb2d8521f5a24e0333875701556d12860b2a5e4f53cca done
+#9 naming to docker.io/library/ofv-package-tests:latest done
+#9 unpacking to docker.io/library/ofv-package-tests:latest
+#9 unpacking to docker.io/library/ofv-package-tests:latest 0.3s done
+#9 DONE 1.6s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/hxntljwwpi0ysspk64wmii5d2

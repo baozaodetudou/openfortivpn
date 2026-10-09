@@ -10,7 +10,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  OFFICIAL_SIGNED_RELEASE: ${{ vars.OFFICIAL_SIGNED_RELEASE }}
 
 concurrency:
   group: desktop-release-${{ github.ref }}
@@ -48,7 +51,7 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 10
+          version: 10.24.0
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -79,6 +82,8 @@ jobs:
           cargo fmt --manifest-path src-tauri/helper/Cargo.toml --all -- --check
           cargo clippy --locked --manifest-path src-tauri/helper/Cargo.toml --all-targets -- -D warnings
           cargo test --locked --manifest-path src-tauri/helper/Cargo.toml --all-targets
+          cargo test --locked --manifest-path ../Cargo.toml --workspace
+          node --test ../tests/remote-client.test.mjs ../tests/release-manifest.test.mjs
 
       - name: Build and test VPN engine
         working-directory: ${{ github.workspace }}
@@ -163,7 +168,7 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 10
+          version: 10.24.0
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -189,6 +194,10 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          if [[ "$OFFICIAL_SIGNED_RELEASE" == "true" ]] && { test -z "$APPLE_CERTIFICATE" || test -z "$APPLE_CERTIFICATE_PASSWORD" || test -z "$KEYCHAIN_PASSWORD" || test -z "$APPLE_ID" || test -z "$APPLE_PASSWORD" || test -z "$APPLE_TEAM_ID"; }; then
+            echo "::error::Official release requires Apple signing and notarization credentials"
+            exit 1
+          fi
           if test -z "$APPLE_CERTIFICATE" || test -z "$APPLE_CERTIFICATE_PASSWORD" || test -z "$KEYCHAIN_PASSWORD"; then
             if [[ "$GITHUB_REF" == refs/tags/* ]]; then
               echo "::warning::Apple signing secrets are unavailable; publishing an ad-hoc signed prerelease"
@@ -282,6 +291,12 @@ jobs:
             fi
             kill -TERM "$app_pid"
             wait "$app_pid" || true
+            node ../scripts/release-evidence.mjs --platform "${{ matrix.name }}" \
+              --root "${{ matrix.bundle_root }}" --manifest src-tauri/Cargo.toml \
+              --manager "$app_path/Contents/MacOS/openfortivpn-manager" \
+              --engine "$app_path/Contents/Resources/bin/openfortivpn" \
+              --helper "$app_path/Contents/Resources/bin/openfortivpn-manager-helper" \
+              --helper-manifest src-tauri/helper/Cargo.toml --app-bundle "$app_path"
           else
             deb=$(find src-tauri/target/release/bundle/deb -name '*.deb' -print -quit)
             test -n "$deb"
@@ -306,6 +321,10 @@ jobs:
               cat "$RUNNER_TEMP/openfortivpn-manager.log"
               exit 1
             fi
+            node ../scripts/release-evidence.mjs --platform "${{ matrix.name }}" \
+              --root "${{ matrix.bundle_root }}" --manifest src-tauri/Cargo.toml \
+              --manager "$app_binary" --engine "$engine" --helper "$helper" \
+              --helper-manifest src-tauri/helper/Cargo.toml
           fi
 
       - name: Generate SHA-256 checksums
@@ -329,6 +348,8 @@ jobs:
             ${{ matrix.artifact_root }}/**/*.dmg
             ${{ matrix.artifact_root }}/macos/*.app/**
             ${{ matrix.artifact_root }}/SHA256SUMS-*.txt
+            ${{ matrix.artifact_root }}/release-evidence-*.json
+            ${{ matrix.artifact_root }}/sbom-*.cdx.json
           if-no-files-found: error
 
   bundle-windows:
@@ -377,7 +398,7 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 10
+          version: 10.24.0
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -396,6 +417,9 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
         run: |
+          if ($env:OFFICIAL_SIGNED_RELEASE -eq 'true' -and (-not $env:WINDOWS_CERTIFICATE -or -not $env:WINDOWS_CERTIFICATE_PASSWORD -or -not $env:WINDOWS_TIMESTAMP_URL)) {
+            throw 'Official release requires Authenticode credentials'
+          }
           if (-not $env:WINDOWS_CERTIFICATE -or -not $env:WINDOWS_CERTIFICATE_PASSWORD -or -not $env:WINDOWS_TIMESTAMP_URL) {
             if ($env:GITHUB_REF.StartsWith('refs/tags/')) {
               Write-Warning 'Authenticode secrets are unavailable; publishing an unsigned prerelease'
@@ -423,6 +447,20 @@ jobs:
           OPENFORTIVPN_SKIP_ENGINE_BUILD: '1'
         run: |
           pnpm install --frozen-lockfile
+          if ($env:WINDOWS_CERTIFICATE_THUMBPRINT) {
+            $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+              Where-Object { $_.FullName -match '\\x64\\signtool.exe$' } |
+              Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signTool) { throw 'signtool.exe was not found' }
+            Get-ChildItem src-tauri/resources/bin -File |
+              Where-Object { $_.Extension -in '.exe', '.dll' } |
+              ForEach-Object {
+                if ((Get-AuthenticodeSignature $_.FullName).Status -ne 'Valid') {
+                  & $signTool.FullName sign /sha1 $env:WINDOWS_CERTIFICATE_THUMBPRINT /fd SHA256 /tr $env:WINDOWS_TIMESTAMP_URL /td SHA256 $_.FullName
+                  if ($LASTEXITCODE -ne 0) { throw 'Runtime payload signing failed' }
+                }
+              }
+          }
           if ($env:WINDOWS_CERTIFICATE_THUMBPRINT) {
             $config = @{
               bundle = @{
@@ -482,6 +520,8 @@ jobs:
           Stop-Process -Id $managerProcess.Id
           $uninstall = Start-Process msiexec.exe -ArgumentList @('/x', $quotedMsi, '/qn', '/norestart') -Wait -PassThru
           if ($uninstall.ExitCode -notin 0, 3010) { throw "MSI uninstall failed with $($uninstall.ExitCode)" }
+          node scripts/release-evidence.mjs --platform Windows-x64 --root app/src-tauri/target/release/bundle --manifest app/src-tauri/Cargo.toml --manager app/src-tauri/target/release/openfortivpn-manager.exe --engine app/src-tauri/resources/bin/openfortivpn.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Windows release evidence failed' }
 
       - name: Generate SHA-256 checksums
         shell: pwsh
@@ -510,6 +550,8 @@ jobs:
             app/src-tauri/target/release/bundle/nsis/*.exe
             app/src-tauri/target/release/bundle/msi/*.msi
             app/src-tauri/target/release/bundle/SHA256SUMS-Windows-x64.txt
+            app/src-tauri/target/release/bundle/release-evidence-*.json
+            app/src-tauri/target/release/bundle/sbom-*.cdx.json
           if-no-files-found: error
 
   bundle-headless-linux:
@@ -532,6 +574,11 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node.js for release evidence
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -610,6 +657,10 @@ jobs:
             -H "Authorization: Bearer $token" \
             https://127.0.0.1:18443/api/v1/snapshot
           sudo apt-get remove -y openfortivpn-manager-headless
+          node scripts/release-evidence.mjs --platform Linux-headless-x86_64 \
+            --root headless-dist --manifest headless/Cargo.toml \
+            --manager headless/target/release/openfortivpn-manager-headless \
+            --engine build/headless-release/openfortivpn
 
       - name: Generate SHA-256 checksums
         run: |
@@ -624,19 +675,44 @@ jobs:
             headless-dist/*.deb
             headless-dist/*.tar.gz
             headless-dist/SHA256SUMS-*.txt
+            headless-dist/release-evidence-*.json
+            headless-dist/sbom-*.cdx.json
           if-no-files-found: error
 
   publish:
     name: Publish tagged desktop release
+    permissions:
+      contents: write
     if: startsWith(github.ref, 'refs/tags/')
     needs: [bundle-unix, bundle-windows, bundle-headless-linux]
     runs-on: ubuntu-22.04
     steps:
+      - name: Checkout release verification scripts
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
       - name: Download all verified platform artifacts
         uses: actions/download-artifact@v7
         with:
           path: release-assets
           merge-multiple: true
+
+      - name: Verify complete bundle and generate release manifest
+        env:
+          RELEASE_ACCEPTANCE_EVIDENCE: ${{ vars.RELEASE_ACCEPTANCE_EVIDENCE }}
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; fs.writeFileSync(process.env.RUNNER_TEMP + "/acceptance.json", process.env.RELEASE_ACCEPTANCE_EVIDENCE || "null")'
+          manifest_args=(--root release-assets --commit "$GITHUB_SHA" --output release-assets/release-manifest.json)
+          if [[ "$OFFICIAL_SIGNED_RELEASE" == "true" ]]; then
+            manifest_args+=(--official --acceptance "$RUNNER_TEMP/acceptance.json")
+          fi
+          node scripts/release-manifest.mjs "${manifest_args[@]}"
 
       - name: Publish one complete GitHub release
         uses: softprops/action-gh-release@v2
@@ -650,10 +726,8 @@ jobs:
             桌面版以及 Linux headless 安装包。所有附件均由本标签的 CI 构建并
             经过平台烟测，校验文件见 `SHA256SUMS-*.txt`。
 
-            > 当前仓库尚未配置 Apple Developer ID、公证和 Windows
-            > Authenticode secrets，因此该版本作为预发布提供。macOS 可能需要
-            > 手动允许应用，Windows 可能显示 SmartScreen 提示。正式分发前请配置
-            > 签名 secrets，并把仓库变量 `OFFICIAL_SIGNED_RELEASE` 设为 `true`。
+            签名与公证按 CI 实际验证结果决定；正式模式缺失任一所需凭据时构建失败。
+            内部候选为预发布，不代表已通过真实 VPN 网关和跨平台网络恢复验收。
 
             使用说明见项目根目录 `README.md`、`docs/user-guide.zh-CN.md` 和
             `headless/README.md`。
@@ -664,4 +738,7 @@ jobs:
             release-assets/**/*.msi
             release-assets/**/*.tar.gz
             release-assets/**/SHA256SUMS-*.txt
+            release-assets/**/release-evidence-*.json
+            release-assets/**/sbom-*.cdx.json
+            release-assets/release-manifest.json
           generate_release_notes: true

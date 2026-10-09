@@ -1,0 +1,19 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling untrusted v0.9.0
+   Compiling num-conv v0.2.2
+   Compiling time-core v0.1.9
+   Compiling powerfmt v0.2.1
+   Compiling ring v0.17.14
+   Compiling getrandom v0.2.17
+   Compiling rustls-pki-types v1.15.1
+   Compiling deranged v0.5.8
+   Compiling pem v3.0.6
+   Compiling subtle v2.6.1
+   Compiling time v0.3.55
+   Compiling yasna v0.6.0
+   Compiling rustls v0.23.45
+   Compiling rustls-webpki v0.103.15
+   Compiling rcgen v0.14.8
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 53s

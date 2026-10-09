@@ -1,0 +1,65 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from package-test.Dockerfile
+#1 transferring dockerfile: 192B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/debian:bookworm-slim
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/2] FROM docker.io/library/debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+#4 resolve docker.io/library/debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171 0.0s done
+#4 CACHED
+
+#5 [2/2] RUN apt-get update && apt-get install -y --no-install-recommends ppp systemd     && rm -rf /var/lib/apt/lists/*
+#5 1.690 Get:1 http://deb.debian.org/debian bookworm InRelease [151 kB]
+#5 2.620 Get:2 http://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+#5 3.353 Get:3 http://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]
+#5 63.41 Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+#5 65.87 Get:5 http://deb.debian.org/debian bookworm-updates/main amd64 Packages [6924 B]
+#5 125.9 Ign:6 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages
+#5 135.9 Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+#5 145.9 Ign:6 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages
+#5 206.0 Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+#5 209.6 Get:6 http://deb.debian.org/debian-security bookworm-security/main amd64 Packages [349 kB]
+#5 270.1 Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+#5 330.1 Err:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+#5 330.1   Connection failed [IP: 198.18.1.137 80]
+#5 390.2 Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+#5 450.2 Err:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+#5 450.2   Connection failed [IP: 198.18.1.137 80]
+#5 452.0 Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+#5 453.4 Err:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+#5 453.4   Connection failed [IP: 198.18.1.137 80]
+#5 453.4 Fetched 598 kB in 7min 33s (1318 B/s)
+#5 453.4 Reading package lists...
+#5 453.4 E: Failed to fetch http://deb.debian.org/debian/dists/bookworm/main/binary-amd64/Packages  Connection failed [IP: 198.18.1.137 80]
+#5 453.4 E: Some index files failed to download. They have been ignored, or old ones used instead.
+#5 ERROR: process "/bin/sh -c apt-get update && apt-get install -y --no-install-recommends ppp systemd     && rm -rf /var/lib/apt/lists/*" did not complete successfully: exit code: 100
+------
+ > [2/2] RUN apt-get update && apt-get install -y --no-install-recommends ppp systemd     && rm -rf /var/lib/apt/lists/*:
+390.2 Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+450.2 Err:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+450.2   Connection failed [IP: 198.18.1.137 80]
+452.0 Ign:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+453.4 Err:4 http://deb.debian.org/debian bookworm/main amd64 Packages
+453.4   Connection failed [IP: 198.18.1.137 80]
+453.4 Fetched 598 kB in 7min 33s (1318 B/s)
+453.4 Reading package lists...
+453.4 E: Failed to fetch http://deb.debian.org/debian/dists/bookworm/main/binary-amd64/Packages  Connection failed [IP: 198.18.1.137 80]
+453.4 E: Some index files failed to download. They have been ignored, or old ones used instead.
+------
+package-test.Dockerfile:2
+--------------------
+   1 |     FROM debian:bookworm-slim
+   2 | >>> RUN apt-get update && apt-get install -y --no-install-recommends ppp systemd \
+   3 | >>>     && rm -rf /var/lib/apt/lists/*
+   4 |     
+--------------------
+ERROR: failed to build: failed to solve: process "/bin/sh -c apt-get update && apt-get install -y --no-install-recommends ppp systemd     && rm -rf /var/lib/apt/lists/*" did not complete successfully: exit code: 100
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/9kvpnakr3ads9rqdfgg2lb25t

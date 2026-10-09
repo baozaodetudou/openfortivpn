@@ -1,0 +1,18 @@
+{
+  "acceptanceEligible": true,
+  "allocatorUsage": [
+    20084080,
+    197668864,
+    35853
+  ],
+  "completed": true,
+  "cycles": 423,
+  "elapsedSeconds": 300,
+  "hostNetworkModified": false,
+  "kind": "synthetic-lifecycle-log-stress",
+  "maxLiveAttempts": 1,
+  "physicalFootprintBytes": 17248256,
+  "requestedSeconds": 300,
+  "residentHighWaterBytes": 29495296,
+  "schemaVersion": 1
+}

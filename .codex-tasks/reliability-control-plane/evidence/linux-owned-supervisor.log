@@ -1,0 +1,35 @@
+
+running 5 tests
+1+0 records in
+1+0 records out
+1 byte copied, 0.00020608 s, 4.9 kB/s
+0+0 records in
+0+0 records out
+0 bytes copied, 0.00010327 s, 0.0 kB/s
+test supervisor::tests::cancelled_supervisor_reaps_the_exact_async_child ... ok
+test supervisor::tests::launch_endpoint_is_inherited_but_parent_grant_endpoint_is_not ... ok
+test supervisor::tests::shared_deadline_aborts_and_joins_every_incomplete_task ... ok
+test supervisor::tests::inherited_writer_does_not_keep_a_terminal_attempt_draining_forever ... ok
+test supervisor::tests::dropping_an_adapter_preserves_the_child_for_the_reaper ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 68 filtered out; finished in 0.06s
+
+
+running 5 tests
+test network_authority::tests::older_records_never_gain_pre_spawn_gate_proof_during_migration ... ok
+test network_authority::tests::invalid_records_and_symlinks_fail_closed_before_recovery_callback ... ok
+test network_authority::tests::crashed_worker_or_failed_cleanup_keeps_the_durable_reservation ... ok
+test network_authority::tests::installer_and_process_binding_cannot_bypass_the_active_owner ... ok
+test network_authority::tests::every_manager_is_excluded_until_reap_and_cleanup_are_confirmed ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 68 filtered out; finished in 0.06s
+
+
+running 4 tests
+test repository::tests::legacy_and_versioned_metadata_preserve_records_but_future_versions_fail_closed ... ok
+test repository::tests::restore_versions_and_pins_are_identical_for_both_adapters_and_overflow_aborts_every_record ... ok
+test repository::tests::portable_restore_never_adopts_internal_refs_or_orphaned_credentials ... ok
+test repository::tests::superseded_intents_preserve_current_and_backup_credentials_and_collect_both_orphans ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.02s
+

@@ -1,0 +1,114 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from linux-headers.Dockerfile
+#1 transferring dockerfile: 190B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/ofv-package-builder:latest
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/2] FROM docker.io/library/ofv-package-builder:latest@sha256:761cdac4a82825f7d19eea285a4783ce16b6bd332881e19afa7ecf86c22ab7e3
+#4 resolve docker.io/library/ofv-package-builder:latest@sha256:761cdac4a82825f7d19eea285a4783ce16b6bd332881e19afa7ecf86c22ab7e3 0.0s done
+#4 DONE 0.0s
+
+#4 [1/2] FROM docker.io/library/ofv-package-builder:latest@sha256:761cdac4a82825f7d19eea285a4783ce16b6bd332881e19afa7ecf86c22ab7e3
+#4 DONE 0.1s
+
+#5 [2/2] RUN apt-get update && apt-get install -y --no-install-recommends libc6-dev     && rm -rf /var/lib/apt/lists/*
+#5 1.079 Get:1 https://deb.debian.org/debian bookworm InRelease [151 kB]
+#5 2.123 Get:2 https://deb.debian.org/debian bookworm-updates InRelease [55.4 kB]
+#5 2.471 Get:3 https://deb.debian.org/debian-security bookworm-security InRelease [34.8 kB]
+#5 2.835 Get:4 https://deb.debian.org/debian bookworm/main amd64 Packages [8790 kB]
+#5 61.86 Get:5 https://deb.debian.org/debian bookworm-updates/main amd64 Packages [6924 B]
+#5 62.02 Get:6 https://deb.debian.org/debian-security bookworm-security/main amd64 Packages [349 kB]
+#5 63.80 Fetched 9388 kB in 1min 3s (148 kB/s)
+#5 63.80 Reading package lists...
+#5 64.51 Reading package lists...
+#5 65.13 Building dependency tree...
+#5 65.30 Reading state information...
+#5 65.42 The following additional packages will be installed:
+#5 65.43   libc-dev-bin libcrypt-dev libnsl-dev libnsl2 libtirpc-common libtirpc-dev
+#5 65.43   libtirpc3 linux-libc-dev rpcsvc-proto
+#5 65.43 Suggested packages:
+#5 65.43   glibc-doc manpages-dev
+#5 65.43 Recommended packages:
+#5 65.43   manpages manpages-dev libc-devtools
+#5 65.50 The following NEW packages will be installed:
+#5 65.50   libc-dev-bin libc6-dev libcrypt-dev libnsl-dev libnsl2 libtirpc-common
+#5 65.50   libtirpc-dev libtirpc3 linux-libc-dev rpcsvc-proto
+#5 66.31 0 upgraded, 10 newly installed, 0 to remove and 4 not upgraded.
+#5 66.31 Need to get 4887 kB of archives.
+#5 66.31 After this operation, 21.7 MB of additional disk space will be used.
+#5 66.31 Get:1 https://deb.debian.org/debian bookworm/main amd64 libc-dev-bin amd64 2.36-9+deb12u14 [48.1 kB]
+#5 66.90 Get:2 https://deb.debian.org/debian-security bookworm-security/main amd64 linux-libc-dev amd64 6.1.187-1 [2357 kB]
+#5 81.32 Get:3 https://deb.debian.org/debian bookworm/main amd64 libcrypt-dev amd64 1:4.4.33-2 [118 kB]
+#5 81.44 Get:4 https://deb.debian.org/debian bookworm/main amd64 libtirpc-common all 1.3.3+ds-1 [14.0 kB]
+#5 81.47 Get:5 https://deb.debian.org/debian bookworm/main amd64 libtirpc3 amd64 1.3.3+ds-1 [85.2 kB]
+#5 81.70 Get:6 https://deb.debian.org/debian bookworm/main amd64 libnsl2 amd64 1.3.0-2 [39.5 kB]
+#5 81.82 Get:7 https://deb.debian.org/debian bookworm/main amd64 libtirpc-dev amd64 1.3.3+ds-1 [191 kB]
+#5 82.40 Get:8 https://deb.debian.org/debian bookworm/main amd64 libnsl-dev amd64 1.3.0-2 [66.4 kB]
+#5 82.50 Get:9 https://deb.debian.org/debian bookworm/main amd64 rpcsvc-proto amd64 1.4.3-1 [63.3 kB]
+#5 82.67 Get:10 https://deb.debian.org/debian bookworm/main amd64 libc6-dev amd64 2.36-9+deb12u14 [1904 kB]
+#5 89.29 debconf: delaying package configuration, since apt-utils is not installed
+#5 89.32 Fetched 4887 kB in 24s (207 kB/s)
+#5 89.34 Selecting previously unselected package libc-dev-bin.
+#5 89.34 (Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 11696 files and directories currently installed.)
+#5 89.35 Preparing to unpack .../0-libc-dev-bin_2.36-9+deb12u14_amd64.deb ...
+#5 89.35 Unpacking libc-dev-bin (2.36-9+deb12u14) ...
+#5 89.39 Selecting previously unselected package linux-libc-dev:amd64.
+#5 89.39 Preparing to unpack .../1-linux-libc-dev_6.1.187-1_amd64.deb ...
+#5 89.40 Unpacking linux-libc-dev:amd64 (6.1.187-1) ...
+#5 89.70 Selecting previously unselected package libcrypt-dev:amd64.
+#5 89.70 Preparing to unpack .../2-libcrypt-dev_1%3a4.4.33-2_amd64.deb ...
+#5 89.71 Unpacking libcrypt-dev:amd64 (1:4.4.33-2) ...
+#5 89.76 Selecting previously unselected package libtirpc-common.
+#5 89.77 Preparing to unpack .../3-libtirpc-common_1.3.3+ds-1_all.deb ...
+#5 89.77 Unpacking libtirpc-common (1.3.3+ds-1) ...
+#5 89.80 Selecting previously unselected package libtirpc3:amd64.
+#5 89.80 Preparing to unpack .../4-libtirpc3_1.3.3+ds-1_amd64.deb ...
+#5 89.81 Unpacking libtirpc3:amd64 (1.3.3+ds-1) ...
+#5 89.85 Selecting previously unselected package libnsl2:amd64.
+#5 89.85 Preparing to unpack .../5-libnsl2_1.3.0-2_amd64.deb ...
+#5 89.86 Unpacking libnsl2:amd64 (1.3.0-2) ...
+#5 89.89 Selecting previously unselected package libtirpc-dev:amd64.
+#5 89.90 Preparing to unpack .../6-libtirpc-dev_1.3.3+ds-1_amd64.deb ...
+#5 89.90 Unpacking libtirpc-dev:amd64 (1.3.3+ds-1) ...
+#5 89.96 Selecting previously unselected package libnsl-dev:amd64.
+#5 89.96 Preparing to unpack .../7-libnsl-dev_1.3.0-2_amd64.deb ...
+#5 89.97 Unpacking libnsl-dev:amd64 (1.3.0-2) ...
+#5 90.01 Selecting previously unselected package rpcsvc-proto.
+#5 90.01 Preparing to unpack .../8-rpcsvc-proto_1.4.3-1_amd64.deb ...
+#5 90.02 Unpacking rpcsvc-proto (1.4.3-1) ...
+#5 90.08 Selecting previously unselected package libc6-dev:amd64.
+#5 90.08 Preparing to unpack .../9-libc6-dev_2.36-9+deb12u14_amd64.deb ...
+#5 90.09 Unpacking libc6-dev:amd64 (2.36-9+deb12u14) ...
+#5 90.59 Setting up libtirpc-common (1.3.3+ds-1) ...
+#5 90.61 Setting up linux-libc-dev:amd64 (6.1.187-1) ...
+#5 90.62 Setting up rpcsvc-proto (1.4.3-1) ...
+#5 90.63 Setting up libcrypt-dev:amd64 (1:4.4.33-2) ...
+#5 90.66 Setting up libc-dev-bin (2.36-9+deb12u14) ...
+#5 90.67 Setting up libtirpc3:amd64 (1.3.3+ds-1) ...
+#5 90.68 Setting up libtirpc-dev:amd64 (1.3.3+ds-1) ...
+#5 90.70 Setting up libnsl2:amd64 (1.3.0-2) ...
+#5 90.71 Setting up libnsl-dev:amd64 (1.3.0-2) ...
+#5 90.72 Setting up libc6-dev:amd64 (2.36-9+deb12u14) ...
+#5 90.73 Processing triggers for libc-bin (2.36-9+deb12u14) ...
+#5 DONE 90.9s
+
+#6 exporting to image
+#6 exporting layers
+#6 exporting layers 1.5s done
+#6 exporting manifest sha256:401e0be81269ae52912f3e728e816ac3c1eed3aa4a92e60c6fd8b0b4c1f73a62 0.0s done
+#6 exporting config sha256:01fdd567d1f421743ff1bd6fbca6781fb55cd0f1caba4a516e5945b92af7519a 0.0s done
+#6 exporting attestation manifest sha256:252ef836a482d813d4d05d7b230515dba80b051a32f24bb04d473000bfcc17c9 0.0s done
+#6 exporting manifest list sha256:df33c2129e6bd8c8b8b23425aeaa7a063b6250911a6503ebfa3918750b8d16e1 0.0s done
+#6 naming to docker.io/library/ofv-package-builder-complete:latest done
+#6 unpacking to docker.io/library/ofv-package-builder-complete:latest
+#6 unpacking to docker.io/library/ofv-package-builder-complete:latest 0.6s done
+#6 DONE 2.3s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/b52h4xdd455wfjp3azqqwa8sh

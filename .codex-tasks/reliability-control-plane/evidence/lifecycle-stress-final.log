@@ -1,0 +1,20 @@
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.91s
+     Running tests/lifecycle_stress.rs (headless/target/debug/deps/lifecycle_stress-edca5fb046f1f289)
+
+running 1 test
+cycle=50 logs=550 text_bytes=1645000 resident=13398016 physical_footprint=5857280 high_water=13398016 allocator=(4235776, 163577856, 5779) baseline=None
+cycle=100 logs=1099 text_bytes=3289986 resident=16945152 physical_footprint=9396224 high_water=16945152 allocator=(8242768, 163577856, 10942) baseline=None
+test real_time_lifecycle_and_log_stress has been running for over 60 seconds
+cycle=150 logs=1636 text_bytes=4898066 resident=24829952 physical_footprint=12926976 high_water=24829952 allocator=(18870320, 197668864, 15900) baseline=None
+cycle=200 logs=2000 text_bytes=5983835 resident=27566080 physical_footprint=15663104 high_water=27566080 allocator=(20053040, 197668864, 20389) baseline=Some((184, 27107328))
+cycle=250 logs=2000 text_bytes=5992089 resident=28139520 physical_footprint=16236544 high_water=28139520 allocator=(20059296, 197668864, 23749) baseline=Some((184, 27107328))
+cycle=300 logs=2000 text_bytes=6000163 resident=28327936 physical_footprint=16424960 high_water=28327936 allocator=(20075136, 197668864, 27195) baseline=Some((184, 27107328))
+cycle=350 logs=2000 text_bytes=6000163 resident=28614656 physical_footprint=16711680 high_water=28614656 allocator=(20071008, 197668864, 30516) baseline=Some((184, 27107328))
+cycle=400 logs=2000 text_bytes=6004245 resident=29233152 physical_footprint=17330176 high_water=29233152 allocator=(20079232, 197668864, 33873) baseline=Some((184, 27107328))
+cycle=450 logs=2000 text_bytes=6012409 resident=29839360 physical_footprint=17936384 high_water=29839360 allocator=(20094416, 197668864, 37072) baseline=Some((184, 27107328))
+stress completed: 450 cycles in 300 seconds
+test real_time_lifecycle_and_log_stress ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 301.00s
+

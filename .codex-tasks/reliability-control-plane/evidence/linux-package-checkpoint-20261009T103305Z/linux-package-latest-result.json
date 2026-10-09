@@ -1,0 +1,70 @@
+{
+  "timestamp": "2026-10-09T10:37:47.213979+00:00",
+  "unchanged": false,
+  "groups": {
+    "manager": {
+      "changedFiles": [
+        "crates/manager-core/src/network.rs",
+        "crates/manager-core/src/network_authority.rs"
+      ],
+      "unchanged": false,
+      "digest": "94531e080caf1ee7722bffb2f52d22f7a7496c9b498b7e1f888953d839439bb2"
+    },
+    "engine": {
+      "changedFiles": [],
+      "unchanged": true,
+      "digest": "5942a5c33b76ab9cb6b169c798ec0e5e6a88c1a9ad2e3272ea4f6f1da7f94fa2"
+    },
+    "packaging": {
+      "changedFiles": [],
+      "unchanged": true,
+      "digest": "18ed6f344cae209db7696c0e19489e2efc4431a5104e7a84e495c17c8b726d03"
+    }
+  },
+  "artifacts": {
+    "headless/target/x86_64-unknown-linux-gnu/debug/openfortivpn-manager-headless": {
+      "sha256": "ffea5759a077e7bb69f6c9055b011d5b3106faf8ed4f96a38c4aa988337fd67d",
+      "bytes": 144184664
+    },
+    "build/linux-package/engine/openfortivpn": {
+      "sha256": "c4a5556bade3c320688c3862d6921f77485f012485dbfd5dc94693c0224db144",
+      "bytes": 5228000
+    },
+    "build/linux-package/openfortivpn-manager-headless_0.1.6_amd64.deb": {
+      "sha256": "764ca5e2ea466d6775169150cd91094feb8ced54a0d2872ede3b770bacbde133",
+      "bytes": 24981060
+    },
+    "build/linux-package/openfortivpn-manager-headless_0.1.6_linux_x86_64.tar.gz": {
+      "sha256": "72b216c08e1087d3c37d20088b343f0ac671285c5d6f85119c7caeabfc3cc315",
+      "bytes": 39134539
+    }
+  },
+  "checks": {
+    "managerBuild": {
+      "exitCode": 0,
+      "log": "linux-manager-rebuild-latest.log"
+    },
+    "engineFirstBuildCachePathFailure": {
+      "exitCode": 2,
+      "log": "linux-engine-rebuild-latest-cache-path-failure.log"
+    },
+    "engineBuildAndCTests8": {
+      "exitCode": 0,
+      "log": "linux-engine-rebuild-latest.log"
+    },
+    "packageBuild": {
+      "exitCode": 0,
+      "log": "linux-package-build-latest.log"
+    },
+    "debianPayloadMatchesBinaries": {
+      "exitCode": 0,
+      "log": "linux-package-payload-latest.log"
+    },
+    "realDpkgTransitionMatrix": {
+      "exitCode": 0,
+      "log": "dpkg-upgrade-rollback-latest.log"
+    }
+  },
+  "systemctlSynthetic": true,
+  "hostNetworkModified": false
+}

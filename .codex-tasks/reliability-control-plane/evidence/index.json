@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "branch": "codex/reliability-control-plane",
+  "baseline": "126ba3a6f3760f56dfff954a06927a0707ea2821",
+  "scope": "Local implementation checkpoint; not complete T01-T24 acceptance",
+  "verification": {
+    "log": "verify-native-ownership-final.log",
+    "exitCode": 0,
+    "rustPassed": 264,
+    "corePassed": 127,
+    "httpPassed": 9,
+    "headlessLibraryPassed": 52,
+    "headlessCliPassed": 4,
+    "headlessCrossProcessPassed": 2,
+    "helperPassed": 14,
+    "desktopPassed": 56,
+    "nodePassed": 42,
+    "svelteErrors": 0,
+    "svelteWarnings": 0,
+    "frontendBuild": "passed",
+    "formatAndClippy": "passed with warnings denied for all four graphs",
+    "powershell": "real PowerShell mock DnsClient matrix; no native NRPT changes",
+    "cTestPassed": 9
+  },
+  "regressions": {
+    "connectAdmission": "connect-admission-checkpoint.json",
+    "nativeAuthority": "native-authority-tests.log",
+    "nativeAuthorityRed": "native-authority-red.log",
+    "maintenanceLockRed": "native-maintenance-lock-red.log",
+    "offlineNativeAnchor": "native-offline-ack-tests.log",
+    "helperOwnership": "helper-owned-reaper-tests.log",
+    "windowsProviderCheckpoint": "windows-implementation-checkpoint.json",
+    "windowsCoreClippy": "native-ownership-windows-clippy.log"
+  },
+  "stress": {
+    "evidence": "lifecycle-stress-native-ownership.json",
+    "log": "lifecycle-stress-native-ownership.log",
+    "exitCode": 0,
+    "seconds": 300,
+    "cycles": 423,
+    "maxLiveAttempts": 1,
+    "residentHighWaterBytes": 29495296,
+    "physicalFootprintBytes": 17248256,
+    "hostNetworkModified": false,
+    "is24HourAcceptance": false
+  },
+  "dependencyAudit": {
+    "evidence": "audit-headless-native-network.json",
+    "exitCode": 0,
+    "packages": 208,
+    "vulnerabilities": 0,
+    "warnings": 0
+  },
+  "nativeLinux": {
+    "log": "linux-native-namespace-tests-final.log",
+    "exitCode": 0,
+    "passed": 35,
+    "environment": "Disposable Docker network namespace; explicit isolated-test flag; NET_ADMIN and /dev/net/tun",
+    "hostNetworkModified": false,
+    "resolvedDns": "Private fake D-Bus transport, not a system resolved service acceptance",
+    "initialContainerPathFailure": "linux-native-namespace-tests-final-container-path-failure.log"
+  },
+  "linuxPackage": {
+    "result": "linux-package-final-result.json",
+    "allFinalChecksExitCode": 0,
+    "managerBuildLog": "linux-manager-rebuild-final.log",
+    "engineBuildLog": "linux-engine-rebuild-final.log",
+    "nativeCoreBuildLog": "linux-core-build-final.log",
+    "packageBuildLog": "linux-package-build-final.log",
+    "payloadLog": "linux-package-payload-final.log",
+    "dpkgLog": "dpkg-upgrade-rollback-final.log",
+    "sourceComparison": "linux-final-inputs-comparison.json",
+    "sourcesUnchanged": true,
+    "cTestPassed": 8,
+    "payloads": "Final rebuilt Linux x86_64 ELF manager and engine; frozen README",
+    "installationEnvironment": "Disposable Docker container",
+    "systemctl": "synthetic; no real systemd or VPN acceptance",
+    "hostInstallation": false
+  },
+  "notAccepted": [
+    "Complete shared connection/lifecycle business service migration",
+    "Helper and desktop native transaction workers",
+    "Full tunnel and physical gateway exception transactions",
+    "macOS and Windows manager native resource handshakes",
+    "SAML browser-manager-engine flow with a verified gateway callback contract",
+    "Complete desktop application/data rollback and signed delivery",
+    "Native macOS and elevated Windows disposable-machine acceptance",
+    "Real FortiGate and systemd acceptance",
+    "24-hour stress acceptance"
+  ],
+  "publication": "Git branch commit and push authorized by the user after verification; no host installation, signing or release publication"
+}

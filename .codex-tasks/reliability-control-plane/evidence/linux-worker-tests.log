@@ -1,0 +1,22 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.39s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-f65dd3a45042ade9)
+
+running 12 tests
+test network_linux_worker::tests::rename_then_failed_fsync_never_unlinks_the_binding_using_only_cached_state ... ok
+test network_linux_worker::tests::failed_binding_save_or_backend_construction_cannot_mutate_resources ... ok
+test network_linux_worker::tests::invalid_interface_transport_full_tunnel_and_unrouted_dns_fail_before_persistence ... ok
+test network_linux_worker::tests::binding_is_rechecked_before_inspect_apply_and_remove_and_never_authorizes_foreign_resources ... ok
+test network_linux_worker::tests::interface_loss_after_process_death_retains_resources_and_the_durable_binding ... ok
+test network_linux_worker::tests::binding_remove_failure_keeps_recovery_anchor_after_network_cleanup_and_retry_is_idempotent ... ok
+test network_linux_worker::tests::missing_or_mismatched_binding_blocks_cleanup_and_external_replacement_is_preserved ... ok
+test network_linux_worker::tests::binding_is_durable_before_every_platform_call_and_routes_precede_dns ... ok
+test network_linux_worker::tests::known_partial_apply_rolls_back_but_uncertain_creation_retains_the_binding ... ok
+test network_linux_worker::tests::runtime_threads_cannot_enter_native_transaction_driver_even_as_root ... ok
+test network_linux_worker::tests::durable_store_proof_is_reloaded_and_corrupt_journals_block_binding_removal ... ok
+test network_linux_worker::tests::filesystem_binding_records_are_private_bounded_and_cannot_follow_symlinks ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 101 filtered out; finished in 0.09s
+

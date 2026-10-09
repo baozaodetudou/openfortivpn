@@ -7,4 +7,4 @@ Depends: ppp, systemd
 Maintainer: baozaodetudou
 Description: Headless HTTPS and CLI manager for multiple OpenFortiVPN tunnels
  Provides a systemd service, Bearer-token Web console, profile management,
- concurrent split-tunnel instances and automatic reconnect.
+ conservative exclusive networking and automatic reconnect.

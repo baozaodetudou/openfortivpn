@@ -16,6 +16,8 @@
  */
 
 #include "event.h"
+#include "exit_codes.h"
+#include "manager_control.h"
 
 #include <pthread.h>
 
@@ -44,8 +46,10 @@ void event_emit(const char *type, const char *json_fields_fmt, ...)
 
 	pthread_mutex_lock(&event_mutex);
 
-	fprintf(stderr, "{\"event\":\"%s\",\"ts\":%lld,\"seq\":%lld",
+	fprintf(stderr, "{\"protocolVersion\":2,\"event\":\"%s\",\"ts\":%lld,\"seq\":%lld",
 	        type, (long long)time(NULL), (long long)seq_counter++);
+    if (manager_control_enabled())
+        fprintf(stderr, ",\"attemptId\":\"%s\"", manager_control_attempt());
 
 	if (json_fields_fmt && json_fields_fmt[0] != '\0') {
 		va_start(ap, json_fields_fmt);
@@ -141,8 +145,9 @@ void event_emit_error(int code, const char *category,
 	json_escape(esc_c, sizeof(esc_c), category);
 	json_escape(esc_m, sizeof(esc_m), msg);
 	snprintf(buf, sizeof(buf),
-	         "\"code\":%d,\"category\":\"%s\",\"message\":\"%s\"",
-	         code, esc_c, esc_m);
+	         "\"code\":%d,\"reasonCode\":\"%s\",\"category\":\"%s\",\"retryable\":%s,\"message\":\"%s\"",
+	         code, ofv_exit_reason(code), esc_c,
+	         ofv_exit_retryable(code) ? "true" : "false", esc_m);
 	event_emit("error", "%s", buf);
 }
 

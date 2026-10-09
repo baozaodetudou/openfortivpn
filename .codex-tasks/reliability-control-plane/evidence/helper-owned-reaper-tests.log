@@ -1,0 +1,23 @@
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+   Compiling openfortivpn-manager-helper v0.1.6 (/Users/doumao/code/github/openfortivpn/app/src-tauri/helper)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.06s
+     Running unittests src/main.rs (app/src-tauri/helper/target/debug/deps/openfortivpn_manager_helper-71110ee6ed33cb93)
+
+running 14 tests
+test tests::helper_setup_or_recovery_failure_never_triggers_automatic_engine_retry ... ok
+test tests::process_identity_detects_pid_reuse_and_executable_replacement ... ok
+test tests::control_tokens_require_an_exact_constant_time_match ... ok
+test tests::rejects_duplicate_and_invalid_values ... ok
+test tests::sudo_may_lead_the_group_while_helper_owns_engine ... ok
+test tests::rejects_root_extension_directives ... ok
+test tests::accepts_only_manager_generated_fields ... ok
+test tests::control_mode_accepts_only_canonical_attempt_and_private_pipe ... ok
+test tests::instance_record_round_trip_binds_owner_processes_and_secret ... ok
+test tests::setup_failure_reaps_the_owned_child_and_joins_an_already_started_reader ... ok
+test tests::helper_observes_cleanup_before_releasing_its_network_authority ... ok
+test tests::upgrade_refuses_nested_owner_records_and_corrupt_directory_links ... ok
+test tests::orphan_recovery_prechecks_all_groups_and_records_before_deleting_anything ... ok
+test tests::failed_subordinate_sync_keeps_global_authority_for_retry ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+

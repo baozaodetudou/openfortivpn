@@ -1,0 +1,21 @@
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+   Compiling openfortivpn-manager-http v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-http)
+   Compiling openfortivpn-manager-headless v0.1.6 (/Users/doumao/code/github/openfortivpn/headless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.54s
+     Running tests/lifecycle_stress.rs (headless/target/debug/deps/lifecycle_stress-edca5fb046f1f289)
+
+running 1 test
+cycle=50 logs=544 text_bytes=1636752 resident=13770752 physical_footprint=5914624 high_water=13770752 allocator=(4226384, 138412032, 5941) baseline=None
+cycle=100 logs=1083 text_bytes=3248942 resident=17264640 physical_footprint=9408512 high_water=17264640 allocator=(8199504, 155189248, 11090) baseline=None
+test real_time_lifecycle_and_log_stress has been running for over 60 seconds
+cycle=150 logs=1631 text_bytes=4893914 resident=25227264 physical_footprint=13000704 high_water=25227264 allocator=(18883024, 172503040, 16291) baseline=None
+cycle=200 logs=2000 text_bytes=6004245 resident=28233728 physical_footprint=16007168 high_water=28233728 allocator=(20090704, 197668864, 20751) baseline=Some((184, 27721728))
+cycle=250 logs=2000 text_bytes=5996261 resident=28880896 physical_footprint=16654336 high_water=28880896 allocator=(20100368, 197668864, 24002) baseline=Some((184, 27721728))
+cycle=300 logs=2000 text_bytes=5996171 resident=29159424 physical_footprint=16932864 high_water=29159424 allocator=(20101808, 197668864, 27370) baseline=Some((184, 27721728))
+cycle=350 logs=2000 text_bytes=5996171 resident=29204480 physical_footprint=16977920 high_water=29204480 allocator=(20131440, 197668864, 30818) baseline=Some((184, 27721728))
+cycle=400 logs=2000 text_bytes=6000253 resident=29302784 physical_footprint=17076224 high_water=29302784 allocator=(20098928, 197668864, 34260) baseline=Some((184, 27721728))
+stress completed: 423 cycles in 300 seconds
+test real_time_lifecycle_and_log_stress ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 300.47s
+

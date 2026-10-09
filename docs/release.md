@@ -56,8 +56,7 @@ release; the unpacked macOS `.app` remains available as a workflow artifact.
 When the protected signing secrets are not configured, a `v*` tag still builds,
 installs and smoke-tests every package, but publishes the result as a GitHub
 prerelease. The release notes explicitly identify macOS as ad-hoc signed and
-Windows as unsigned. Set the repository variable `OFFICIAL_SIGNED_RELEASE=true`
-only after all signing and notarization secrets below have been configured.
+Windows as unsigned. Official mode additionally requires a protected `RELEASE_ACCEPTANCE_EVIDENCE` JSON value bound to the exact commit. Signing credentials alone do not satisfy the release gate.
 
 Before tagging, update the version in `app/src-tauri/tauri.conf.json`,
 `app/src-tauri/Cargo.toml` and `headless/Cargo.toml`; the release workflow derives
@@ -85,8 +84,7 @@ published only as prereleases for internal testing: Gatekeeper may reject an
 unnotarized downloaded app and SmartScreen does not trust an unsigned installer.
 Production releases require a macOS Developer ID Application certificate plus
 notarization credentials and a Windows Authenticode certificate plus timestamp
-service. After configuring every secret, set the repository variable
-`OFFICIAL_SIGNED_RELEASE=true` so the workflow publishes a normal release.
+service. Set `OFFICIAL_SIGNED_RELEASE=true` only after configuring every secret and completing the functional acceptance evidence described below. Missing evidence fails publication.
 
 The release workflow expects these protected secrets:
 
@@ -101,10 +99,7 @@ For every release candidate:
 
 1. Install on a clean supported operating-system account.
 2. Confirm the bundled engine version is shown as available.
-3. Add two disposable profiles and verify they can run concurrently while each
-   profile still owns at most one instance. Repeat a connect request during
-   startup and confirm it reuses the current instance instead of returning an
-   already-connected error.
+3. Add two disposable profiles. Verify the second network-mutating connection returns `NETWORK_CONFLICT` while the first is starting, running, stopping or awaiting recovery. Each profile must own at most one attempt. Repeat connect during startup and verify the existing attempt is returned. Concurrent network connections remain disabled until their platform acceptance matrix passes.
 4. Test connect, disconnect, explicit reconnect, automatic reconnect and
    cancellation of a pending retry. Delete an active disposable profile and
    confirm deletion first stops its process and removes its saved credential.
@@ -114,9 +109,7 @@ For every release candidate:
 6. Verify a successful tunnel reaches an internal test address, then explicitly
    quit from the tray or settings while connected and confirm routes, DNS and all
    VPN child processes are removed.
-7. Relaunch after a forced app termination and verify stale-process recovery
-   uses the installed helper without another password prompt. Removing or
-   damaging the helper must block cleanup and request a fresh helper install.
+7. Relaunch after a forced app termination and verify incomplete process/network journals block auto-connect. Check the recorded process identity before cleanup; an unrelated process with a reused PID must never be signalled. Acknowledge recovery only after residual processes and network resources are verified. Removing or damaging the helper must block cleanup.
 8. Enable remote access on loopback, verify the certificate fingerprint, test
    rejected and authorized API calls, rotate the token and disable the server.
 9. Reboot once to verify application autostart begins hidden with a persistent
@@ -149,3 +142,66 @@ profiles, credential availability and the bundled engine. To roll back,
 disconnect, uninstall the current package, install the previously verified
 installer and restore the matching app-data backup. Never copy plaintext VPN
 passwords into the profile JSON.
+
+## Verified release manifest and SBOM
+
+The platform jobs generate `release-evidence-<platform>.json` and a CycloneDX
+`sbom-<platform>.cdx.json` after bundle and installation smoke checks. Evidence
+contains the source commit, manager/engine/helper versions and protocols,
+SHA-256 of every installer, actual signing/notarization checks and the SBOM hash.
+The publication job assembles `release-manifest.json` and rejects missing
+platforms, duplicate names, changed attachments or different manager versions.
+Linux checksums do not represent an operating-system code-signing identity.
+Candidate smoke results do not imply gateway or network-recovery acceptance.
+
+`RELEASE_ACCEPTANCE_EVIDENCE` has this shape. Repeat its platform entry for
+`Linux-x64`, `macOS-arm64`, `macOS-x86_64`, `Windows-x64` and
+`Linux-headless-x86_64`; use the actual reviewed commit and retained evidence IDs:
+
+```json
+{
+  "schemaVersion": 1,
+  "commit": "<40-character reviewed commit>",
+  "platforms": {
+    "Linux-x64": {
+      "evidenceId": "<controlled acceptance run ID>",
+      "checks": {
+        "network-recovery": "passed",
+        "password-gateway": "passed",
+        "upgrade": "passed",
+        "rollback": "passed"
+      }
+    }
+  }
+}
+```
+
+The dependency security workflow audits all four Cargo lockfiles and the
+installed frozen pnpm graph weekly and on changes. High/critical npm advisories
+and Rust vulnerabilities fail the scan; an unavailable registry or invalid
+response fails rather than producing a clean result. Review reachability and
+upgrade compatibility when resolving findings. Do not suppress an advisory
+without a documented owner, reason and expiry.
+
+## Headless recovery and credentials
+
+Use `openfortivpn-manager-headless backup --output /private/backup.json` before
+an offline schema change. This private backup includes stored VPN credentials;
+it excludes session-only passwords, remote tokens and HTTPS private keys.
+Stop the service before `restore --input /private/backup.json`; restore keeps a
+private rollback copy and refuses an incompatible schema. For full installation
+rollback retain the matching package, profile backup, remote settings, token and
+TLS identity using an encrypted, access-controlled system backup.
+
+`token --rotate` revokes the old token for the next API request without restarting
+VPN connections. Desktop rotation likewise updates the running authorization
+state. Requests already authorized may finish; rotation is not cancellation of
+in-flight operations. A failed credential write leaves the old token active.
+
+HTTPS identities use a private redo journal, atomic replacement and a commit
+manifest. Startup repairs an interrupted generated pair before opening the
+listener, and checks private-key matching plus DNS/IP subject coverage. A custom
+operator pair is preserved and rejected if invalid instead of overwritten.
+Changing a managed bind regenerates the pair; distribute and verify the new
+fingerprint through a trusted channel. Legacy desktop identities without hash
+metadata are treated as operator-installed identities on first migration.

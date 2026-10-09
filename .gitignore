@@ -20,4 +20,5 @@ config.guess
 openfortivpn@.service
 /build/
 /headless/target/
+/target/
 /.pnpm-store/

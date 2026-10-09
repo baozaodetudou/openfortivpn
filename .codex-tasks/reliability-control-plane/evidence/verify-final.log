@@ -1,0 +1,99 @@
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+   Compiling openfortivpn-manager-http v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-http)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.52s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-a96e20202eccae65)
+
+running 72 tests
+test control::tests::responses_are_single_use_bound_to_attempt_generation_and_deadline ... ok
+test control::tests::cancelling_one_profile_leaves_other_challenges_and_rejects_control_injection ... ok
+test diagnostics::tests::unknown_fields_and_free_text_cannot_leak_into_export ... ok
+test lifecycle::tests::auth_tls_config_and_network_mutation_errors_do_not_retry ... ok
+test lifecycle::tests::fake_clock_never_retries_cancelled_or_obsolete_intent ... ok
+test lifecycle::tests::cleanup_must_finish_after_readiness_and_failures_are_sticky ... ok
+test json_buffer::tests::serialization_failure_returns_lease_and_pool_retention_stays_bounded ... ok
+test lifecycle::tests::private_events_must_match_the_bound_attempt_before_readiness_or_cleanup ... ok
+test lifecycle::tests::private_or_v2_attempt_never_accepts_text_readiness_or_protocol_downgrade ... ok
+test lifecycle::tests::successful_cleanup_and_partial_output_are_distinct ... ok
+test network::tests::a_second_crash_during_recovery_never_erases_uncertain_ownership ... ok
+test network::tests::changed_networks_invalidate_lease_replays_without_mutating_resources ... ok
+test network::tests::failed_commit_cannot_be_retried_as_a_successful_active_transaction ... ok
+test json_buffer::tests::overlapping_leases_never_reuse_live_bytes_and_dropped_responses_recycle_capacity ... ok
+test network::tests::apply_fault_matrix_rolls_back_known_creations_at_every_persistence_boundary ... ok
+test network::tests::journal_failure_prevents_mutation_and_interrupted_apply_never_deletes_unowned_resources ... ok
+test network::tests::overlap_global_dns_and_domain_suffixes_conflict_before_any_mutation ... ok
+test network::tests::preexisting_resources_survive_and_external_changes_block_cleanup ... ok
+test network::tests::uncertain_resource_retains_lease_but_does_not_prevent_known_resource_rollback ... ok
+test network::tests::sharing_an_already_active_gateway_retains_creation_ownership ... ok
+test network::tests::shared_gateway_exception_is_removed_only_after_last_created_owner ... ok
+test actor::tests::idle_mailboxes_expire_and_a_panicking_job_does_not_lose_the_queue ... ok
+test log_buffer::tests::serialization_budget_covers_escaping_utf8_and_max_integer_fields ... ok
+test log_buffer::tests::full_snapshots_share_retained_entries_and_keep_wire_shape_after_eviction ... ok
+test network_macos::tests::supplemental_dictionary_is_exact_and_external_properties_change_ownership ... ok
+test log_buffer::tests::oversized_fields_cannot_evict_everything_or_break_accounting ... ok
+test actor::tests::a_thousand_interleaved_commands_never_overlap_in_one_profile ... ok
+test private_input::tests::full_pipe_times_out_instead_of_blocking_control_plane ... ok
+test process_output::tests::cancellation_joins_reader_even_when_writer_remains_alive ... ok
+test process_output::tests::drains_output_before_eof ... ok
+test protocol::tests::decodes_utf8_across_chunks_and_final_record ... ok
+test protocol::tests::diagnostic_output_does_not_contain_synthetic_secrets ... ok
+test protocol::tests::discards_oversized_event_and_resumes_at_next_record ... ok
+test protocol::tests::late_and_duplicate_events_never_move_the_cursor_backwards ... ok
+test repository::tests::legacy_and_versioned_metadata_preserve_records_but_future_versions_fail_closed ... ok
+test repository::tests::superseded_intents_preserve_current_and_backup_credentials_and_collect_both_orphans ... ok
+test retention::tests::idle_time_eviction_and_capacity_use_a_fake_clock ... ok
+test saml::tests::callbacks_require_loopback_exact_path_method_state_and_live_generation ... ok
+test saml::tests::expiry_cancellation_and_request_injection_never_yield_a_session ... ok
+test credential_journal::tests::credential_failure_retains_intent_and_backup_refs_until_retry ... ok
+test private_file::locking_tests::live_shared_component_guards_exclude_installers_until_every_worker_exits ... ok
+test saml_broker::tests::parser_rejects_duplicate_host_headers_bodies_and_partial_requests ... ok
+test saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session ... FAILED
+test saml_broker::tests::cancellation_and_expiry_close_the_listener_without_a_response ... ok
+test supervisor::tests::cancelled_supervisor_reaps_the_exact_async_child ... ok
+test credential_journal::tests::malformed_or_unsafe_journal_never_deletes_any_credential ... ok
+test private_input::tests::private_input_delivers_and_cancellation_rejects_more_secrets ... ok
+test engine::tests::nonresponsive_probe_is_killed_and_reaped ... ok
+test supervisor::tests::shared_deadline_aborts_and_joins_every_incomplete_task ... ok
+test supervisor::tests::inherited_writer_does_not_keep_a_terminal_attempt_draining_forever ... ok
+test validation::tests::normalizes_pins ... ok
+test validation::tests::validates_bytes_without_trimming_secrets ... ok
+test windows_process::tests::a_reused_pid_is_a_different_process ... ok
+test network_authority::tests::invalid_records_and_symlinks_fail_closed_before_recovery_callback ... ok
+test engine::tests::unknown_successful_capability_protocol_never_downgrades_silently ... ok
+test network_authority::tests::older_records_never_gain_pre_spawn_gate_proof_during_migration ... ok
+test credential_journal::tests::each_crash_boundary_and_later_save_recovers_against_the_durable_ref ... ok
+test network_authority::tests::crashed_worker_or_failed_cleanup_keeps_the_durable_reservation ... ok
+test network_authority::tests::installer_and_process_binding_cannot_bypass_the_active_owner ... ok
+test network_authority::tests::every_manager_is_excluded_until_reap_and_cleanup_are_confirmed ... ok
+test engine::tests::legacy_version_does_not_claim_event_protocol_support ... ok
+1+0 records in
+1+0 records out
+1 bytes transferred in 0.000015 secs (66667 bytes/sec)
+test tls_identity::tests::operator_identity_is_preserved_and_invalid_replacement_is_rejected ... ok
+test supervisor::tests::dropping_an_adapter_preserves_the_child_for_the_reaper ... ok
+test tls_identity::tests::managed_ipv6_bind_change_regenerates_and_symlinked_key_is_not_read ... ok
+0+0 records in
+0+0 records out
+0 bytes transferred in 0.000015 secs (0 bytes/sec)
+test supervisor::tests::launch_endpoint_is_inherited_but_parent_grant_endpoint_is_not ... ok
+test bundle::tests::pending_bundle_is_bound_to_exact_targets_and_sudoers_mode ... ok
+test bundle::tests::complete_bundle_rolls_back_and_preserves_executable_modes ... ok
+test bundle::tests::external_replacement_and_corrupt_retained_blob_block_recovery_before_writes ... ok
+test tls_identity::tests::interruption_at_each_write_recovers_the_complete_pair ... ok
+test log_buffer::tests::stress_retention_counts_all_fields_and_preserves_cursor_order ... ok
+test bundle::tests::interruption_at_each_replacement_boundary_restores_a_complete_old_bundle ... ok
+test network::tests::independently_opened_stores_preserve_one_hundred_concurrent_reservations ... ok
+
+failures:
+
+---- saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session stdout ----
+
+thread 'saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session' (111373) panicked at crates/manager-core/src/saml_broker.rs:233:9:
+assertion failed: TcpStream::connect(authority).await.is_err()
+
+
+failures:
+    saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session
+
+test result: FAILED. 71 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.14s
+
+error: test failed, to rerun pass `-p openfortivpn-manager-core --lib`

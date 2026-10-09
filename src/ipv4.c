@@ -17,6 +17,7 @@
 
 #include "ipv4.h"
 #include "tunnel.h"
+#include "dns_policy.h"
 #include "config.h"
 #include "log.h"
 #include "xml.h"
@@ -948,9 +949,10 @@ static int ipv4_set_split_routes(struct tunnel *tunnel)
 		ret = ipv4_set_route(route);
 		if (ret == ERR_IPV4_SEE_ERRNO && errno == EEXIST)
 			log_info("Route to gateway exists already.\n");
-		else if (ret != 0)
-			log_warn("Could not set route to tunnel gateway (%s).\n",
-			         err_ipv4_str(ret));
+		else if (ret != 0) {
+            log_warn("Could not set route to tunnel gateway (%s).\n", err_ipv4_str(ret));
+            return ret;
+        }
 	}
 	return 0;
 }
@@ -1051,6 +1053,7 @@ int ipv4_set_tunnel_routes(struct tunnel *tunnel)
 
 int ipv4_restore_routes(struct tunnel *tunnel)
 {
+	int failed = 0;
 	struct rtentry *def_rt = &tunnel->ipv4.def_rt;
 	struct rtentry *gtw_rt = &tunnel->ipv4.gtw_rt;
 	struct rtentry *ppp_rt = &tunnel->ipv4.ppp_rt;
@@ -1060,20 +1063,25 @@ int ipv4_restore_routes(struct tunnel *tunnel)
 		int ret;
 
 		ret = ipv4_del_route(gtw_rt);
-		if (ret != 0)
+		if (ret != 0) {
+            failed = 1;
 			log_warn("Could not delete route to vpn server (%s).\n",
 			         err_ipv4_str(ret));
+        }
 		if ((cfg->half_internet_routes == 0) &&
 		    (tunnel->ipv4.split_routes == 0)) {
 			ret = ipv4_del_route(ppp_rt);
-			if (ret != 0)
+			if (ret != 0) {
+                failed = 1;
 				log_warn("Could not delete route through tunnel (%s).\n",
 				         err_ipv4_str(ret));
+            }
 
 			// Restore the default route. It seems not to be
 			// automatically restored on all linux distributions
 			ret = ipv4_set_route(def_rt);
 			if (ret != 0) {
+                failed = 1;
 				log_warn("Could not restore default route (%s). Already restored?\n",
 				         err_ipv4_str(ret));
 			}
@@ -1085,7 +1093,7 @@ int ipv4_restore_routes(struct tunnel *tunnel)
 	route_destroy(def_rt);
 	route_destroy(gtw_rt);
 
-	return 0;
+	return failed;
 }
 
 static inline char *replace_char(char *str, char find, char replace)
@@ -1184,7 +1192,7 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 		}
 
 		// Copy all file contents at once
-		if (fread(buffer, stat.st_size, 1, file) != 1) {
+		if (fread(buffer, 1, stat.st_size, file) != (size_t)stat.st_size) {
 			log_warn("Could not read /etc/resolv.conf.\n");
 			goto err_free;
 		}
@@ -1218,51 +1226,13 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 #if HAVE_RESOLVCONF
 	if (use_resolvconf == 0) {
 #endif
-		char *saveptr = NULL;
-
-		for (const char *line = strtok_r(buffer, "\n", &saveptr);
-		     line != NULL;
-		     line = strtok_r(NULL, "\n", &saveptr)) {
-			if (strcmp(line, ns1) == 0) {
-				tunnel->ipv4.ns1_was_there = 1;
-				log_debug("ns1 already present in /etc/resolv.conf.\n");
-			}
-		}
-
-		if (tunnel->ipv4.ns1_was_there == 0)
-			log_debug("Adding \"%s\", to /etc/resolv.conf.\n", ns1);
-
-		for (const char *line = strtok_r(buffer, "\n", &saveptr);
-		     line != NULL;
-		     line = strtok_r(NULL, "\n", &saveptr)) {
-			if (strcmp(line, ns2) == 0) {
-				tunnel->ipv4.ns2_was_there = 1;
-				log_debug("ns2 already present in /etc/resolv.conf.\n");
-			}
-		}
-
-		if (tunnel->ipv4.ns2_was_there == 0)
-			log_debug("Adding \"%s\", to /etc/resolv.conf.\n", ns2);
-
-		if (dns_suffix[0] == '\0') {
-			tunnel->ipv4.dns_suffix_was_there = -1;
-		} else {
-			for (const char *line = strtok_r(buffer, "\n", &saveptr);
-			     line != NULL;
-			     line = strtok_r(NULL, "\n", &saveptr)) {
-				if (dns_suffix[0] != '\0'
-				    && strcmp(line, dns_suffix) == 0) {
-					tunnel->ipv4.dns_suffix_was_there = 1;
-					log_debug("dns_suffix already present in /etc/resolv.conf.\n");
-				}
-			}
-		}
-
-		if (tunnel->ipv4.dns_suffix_was_there == 0)
-			log_debug("Adding \"%s\", to /etc/resolv.conf.\n", dns_suffix);
+        if (dns_suffix[0] == '\0') tunnel->ipv4.dns_suffix_was_there = -1;
+        if (dns_line_present(buffer, ns1)) tunnel->ipv4.ns1_was_there = 1;
+        if (dns_line_present(buffer, ns2)) tunnel->ipv4.ns2_was_there = 1;
+        if (dns_line_present(buffer, dns_suffix)) tunnel->ipv4.dns_suffix_was_there = 1;
 
 		rewind(file);
-		if (fread(buffer, stat.st_size, 1, file) != 1) {
+		if (fread(buffer, 1, stat.st_size, file) != (size_t)stat.st_size) {
 			log_warn("Could not read /etc/resolv.conf.\n");
 			goto err_free;
 		}
@@ -1273,6 +1243,7 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 #if HAVE_RESOLVCONF
 	}
 #endif
+	tunnel->dns_apply_started = 1;
 	if (tunnel->ipv4.ns1_was_there == 0) {
 		strcat(ns1, "\n");
 		fputs(ns1, file);
@@ -1290,7 +1261,7 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 #endif
 		fwrite(buffer, stat.st_size, 1, file);
 
-	ret = 0;
+	ret = ferror(file) ? -1 : 0;
 
 err_free:
 	free(buffer);
@@ -1298,14 +1269,16 @@ err_close:
 #if HAVE_RESOLVCONF
 	if (use_resolvconf == 0) {
 #endif
-		if (fclose(file))
-			log_warn("Could not close /etc/resolv.conf: %s\n",
-			         strerror(errno));
+		if (fclose(file)) {
+            log_warn("Could not close /etc/resolv.conf: %s\n", strerror(errno));
+            ret = -1;
+        }
 #if HAVE_RESOLVCONF
 	} else {
-		if (pclose(file) == -1)
-			log_warn("Could not close resolvconf pipe: %s\n",
-			         strerror(errno));
+		if (pclose(file) != 0) {
+            log_warn("resolvconf failed.\n");
+            ret = -1;
+        }
 	}
 #endif
 
@@ -1351,7 +1324,7 @@ int ipv4_del_nameservers_from_resolv_conf(struct tunnel *tunnel)
 		log_debug("resolvconf_call: %s\n", resolvconf_call);
 		ret = system(resolvconf_call);
 		free(resolvconf_call);
-		if (ret == -1)
+		if (ret != 0)
 			return ERR_IPV4_SEE_ERRNO;
 		return 0;
 	}

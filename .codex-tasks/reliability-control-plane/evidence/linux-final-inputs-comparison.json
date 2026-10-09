@@ -1,0 +1,23 @@
+{
+  "unchanged": true,
+  "groups": {
+    "manager": {
+      "changedFiles": [],
+      "unchanged": true,
+      "digest": "9551aac0bc8edc37fb72c96383d7191056a37af64a5385989b3ddfc2f35e88ca"
+    },
+    "engine": {
+      "changedFiles": [],
+      "unchanged": true,
+      "digest": "1ccdb689765430b98ec3ee7bde7b684eb847828ed93b1ccc20ab0e57d9efabd0"
+    },
+    "packaging": {
+      "changedFiles": [],
+      "unchanged": true,
+      "digest": "4513975bb6c1de0c17ca4af9eee9bd9f3234ce426e08927d7645e90d45729e7f"
+    }
+  },
+  "compileSourceTimestamp": "2026-10-09T10:49:55.614043+00:00",
+  "packagingSourceTimestamp": "2026-10-09T10:51:55.386667+00:00",
+  "finalSourceTimestamp": "2026-10-09T10:56:08.096133+00:00"
+}

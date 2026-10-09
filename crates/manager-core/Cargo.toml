@@ -1,0 +1,41 @@
+[package]
+name = "openfortivpn-manager-core"
+version = "0.1.6"
+edition = "2021"
+license = "GPL-3.0-or-later"
+
+[features]
+tls = ["dep:rcgen", "dep:rustls", "dep:rustls-webpki"]
+linux-network = ["dep:zbus"]
+
+[dependencies]
+fs2 = "0.4"
+getrandom = "0.4"
+base64 = "0.22.1"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "sync", "time", "net", "io-util", "macros", "process"] }
+rcgen = { version = "=0.14.8", optional = true }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+rustls-webpki = { version = "0.103", optional = true }
+sha2 = "0.10.9"
+zeroize = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "test-util"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp", "Win32_System_SystemServices", "Win32_System_SystemInformation", "Win32_System_JobObjects", "Win32_System_IO", "Win32_System_Com", "Win32_UI_Shell", "Win32_Security_Authorization", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5.11", optional = true, default-features = false, features = ["tokio"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+zbus = { version = "5.11", default-features = false, features = ["tokio", "p2p"] }

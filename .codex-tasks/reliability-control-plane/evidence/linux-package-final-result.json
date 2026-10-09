@@ -1,0 +1,96 @@
+{
+  "timestamp": "2026-10-09T10:57:40.723141+00:00",
+  "sourceInputs": {
+    "unchanged": true,
+    "groups": {
+      "manager": {
+        "changedFiles": [],
+        "unchanged": true,
+        "digest": "9551aac0bc8edc37fb72c96383d7191056a37af64a5385989b3ddfc2f35e88ca"
+      },
+      "engine": {
+        "changedFiles": [],
+        "unchanged": true,
+        "digest": "1ccdb689765430b98ec3ee7bde7b684eb847828ed93b1ccc20ab0e57d9efabd0"
+      },
+      "packaging": {
+        "changedFiles": [],
+        "unchanged": true,
+        "digest": "4513975bb6c1de0c17ca4af9eee9bd9f3234ce426e08927d7645e90d45729e7f"
+      }
+    },
+    "compileSourceTimestamp": "2026-10-09T10:49:55.614043+00:00",
+    "packagingSourceTimestamp": "2026-10-09T10:51:55.386667+00:00",
+    "finalSourceTimestamp": "2026-10-09T10:56:08.096133+00:00"
+  },
+  "artifacts": {
+    "headless/target/x86_64-unknown-linux-gnu/debug/openfortivpn-manager-headless": {
+      "sha256": "afeed3d6064902329c79099186bf8249ad35b56d8254c3d864e22fa8c9f31305",
+      "bytes": 144313640
+    },
+    "build/linux-package/engine/openfortivpn": {
+      "sha256": "c4a5556bade3c320688c3862d6921f77485f012485dbfd5dc94693c0224db144",
+      "bytes": 5228000
+    },
+    "build/linux-package/openfortivpn-manager-headless_0.1.6_amd64.deb": {
+      "sha256": "b7cb7ca402b6e2a86b98ce3373bc941b5f52e1def46b3fb4252a600354ac9b0c",
+      "bytes": 25018140
+    },
+    "build/linux-package/openfortivpn-manager-headless_0.1.6_linux_x86_64.tar.gz": {
+      "sha256": "b0ef381043d450a06b4c90c5f4664516d10746a3b55e5cb1b5611b7ab97886f0",
+      "bytes": 39174114
+    }
+  },
+  "checks": {
+    "managerCrossBuild": {
+      "exitCode": 0,
+      "log": "linux-manager-rebuild-final.log"
+    },
+    "coreAllFeaturesCrossTestCompile": {
+      "exitCode": 0,
+      "log": "linux-core-build-final.log"
+    },
+    "engineBuildAndCTests8": {
+      "exitCode": 0,
+      "log": "linux-engine-rebuild-final.log"
+    },
+    "networkNamespaceTests35": {
+      "exitCode": 0,
+      "log": "linux-native-namespace-tests-final.log",
+      "passed": 35,
+      "failed": 0,
+      "ignored": 0
+    },
+    "packageBuild": {
+      "exitCode": 0,
+      "log": "linux-package-build-final.log"
+    },
+    "debianPayloadMatchesBinariesAndReadme": {
+      "exitCode": 0,
+      "log": "linux-package-payload-final.log"
+    },
+    "realDpkgTransitionMatrix": {
+      "exitCode": 0,
+      "log": "dpkg-upgrade-rollback-final.log"
+    }
+  },
+  "systemctlSynthetic": true,
+  "hostNetworkModified": false,
+  "nativeTestsIsolated": true,
+  "retainedFailures": [
+    {
+      "exitCode": 127,
+      "log": "linux-native-namespace-tests-final-container-path-failure.log",
+      "reason": "container executable path did not match bind mount; corrected to /source and passed without recompiling"
+    },
+    {
+      "exitCode": 2,
+      "log": "linux-engine-rebuild-latest-cache-path-failure.log",
+      "reason": "prior CMakeCache used /artifacts/engine; restored matching artifact mount and passed"
+    }
+  ],
+  "images": {
+    "builder": "sha256:df33c2129e6bd8c8b8b23425aeaa7a063b6250911a6503ebfa3918750b8d16e1",
+    "packageTests": "sha256:d1779f80e63fdded121cb2d8521f5a24e0333875701556d12860b2a5e4f53cca"
+  }
+}

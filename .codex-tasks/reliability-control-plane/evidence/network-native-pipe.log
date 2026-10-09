@@ -1,0 +1,4 @@
+Private pipe challenge/lease, denial, stale attempt, EOF and no-secret-output checks passed
+Bounded native resource plan, applied/released responses and unsafe plan rejection passed
+Launch barrier waits for durable-owner grant and rejects denial/parent EOF
+Actual C CLI startup barrier precedes configuration and rejects parent EOF

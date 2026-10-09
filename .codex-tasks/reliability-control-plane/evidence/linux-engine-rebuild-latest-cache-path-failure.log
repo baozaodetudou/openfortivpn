@@ -1,0 +1,15 @@
+CMake Error: The current CMakeCache.txt directory /source/build/linux-package/engine/CMakeCache.txt is different than the directory /artifacts/engine where CMakeCache.txt was created. This may result in binaries being created in the wrong place. If you are not sure, reedit the CMakeCache.txt
+/bin/sh: 1: cd: can't cd to /artifacts/engine
+gmake[2]: *** [CMakeFiles/test_url_encoding.dir/build.make:108: CMakeFiles/test_url_encoding.dir/depend] Error 2
+/bin/sh: 1: cd: can't cd to /artifacts/engine
+gmake[2]: *** [CMakeFiles/test_ppp.dir/build.make:140: CMakeFiles/test_ppp.dir/depend] Error 2
+gmake[1]: *** [CMakeFiles/Makefile2:148: CMakeFiles/test_url_encoding.dir/all] Error 2
+gmake[1]: *** Waiting for unfinished jobs....
+gmake[1]: *** [CMakeFiles/Makefile2:122: CMakeFiles/test_ppp.dir/all] Error 2
+/bin/sh: 1: cd: can't cd to /artifacts/engine
+gmake[2]: *** [CMakeFiles/test_tls_policy.dir/build.make:126: CMakeFiles/test_tls_policy.dir/depend] Error 2
+gmake[1]: *** [CMakeFiles/Makefile2:174: CMakeFiles/test_tls_policy.dir/all] Error 2
+/bin/sh: 1: cd: can't cd to /artifacts/engine
+gmake[2]: *** [CMakeFiles/openfortivpn.dir/build.make:318: CMakeFiles/openfortivpn.dir/depend] Error 2
+gmake[1]: *** [CMakeFiles/Makefile2:96: CMakeFiles/openfortivpn.dir/all] Error 2
+gmake: *** [Makefile:146: all] Error 2

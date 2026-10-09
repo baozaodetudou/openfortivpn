@@ -1,0 +1,22 @@
+   Compiling openfortivpn-manager-headless v0.1.6 (/Users/doumao/code/github/openfortivpn/headless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.00s
+     Running unittests src/lib.rs (headless/target/debug/deps/openfortivpn_manager_headless-fca1d01ffbe0cb2a)
+
+running 2 tests
+test native_network::tests::cancelled_reader_cannot_release_ownership_of_a_running_worker ... ok
+
+thread 'manager::tests::native_handshake_commits_before_ready_and_releases_before_global_owner' (365882) panicked at src/manager.rs:1989:9:
+assertion `left == right` failed
+  left: Connecting
+ right: Connected
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test manager::tests::native_handshake_commits_before_ready_and_releases_before_global_owner ... FAILED
+
+failures:
+
+failures:
+    manager::tests::native_handshake_commits_before_ready_and_releases_before_global_owner
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 46 filtered out; finished in 2.34s
+
+error: test failed, to rerun pass `--lib`
