@@ -373,3 +373,12 @@ when the TypeScript system newline is set to CRLF. Windows PowerShell 5.1 and
 MinGW execution are left to the PR CI; the mock now enumerates JSON arrays
 explicitly and exposes diagnostic errors only for synthetic inputs. No host
 network changes, service installation, signed artifact or release is involved.
+
+PR #3's Linux run exposed a fixture-only issue: dash rejects `<&` descriptors
+above 9 while parallel tests can allocate higher descriptors. The launch-gate
+inheritance fixture now uses Bash without eval and holds 32 extra descriptors
+to cover this case. The focused Rust regression, an isolated Linux descriptor-64
+reproduction, and the full local verification script passed after this change.
+Production launch/process behavior is unchanged. Dependency Review reports that
+the repository's Dependency graph feature is disabled; actual Rust and npm
+audits passed. No security feature was disabled or bypassed.

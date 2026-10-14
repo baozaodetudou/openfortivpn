@@ -253,11 +253,16 @@ mod tests {
     }
     #[test]
     fn launch_endpoint_is_inherited_but_parent_grant_endpoint_is_not() {
+        // CI can allocate descriptors above 9. dash's <& redirection rejects
+        // these, so keep the fixture on Bash (including macOS Bash 3.2).
+        let _fd_pressure: Vec<_> = (0..32)
+            .map(|_| std::fs::File::open("/dev/null").unwrap())
+            .collect();
         for grant in [true, false] {
-            let mut command = Command::new("/bin/sh");
+            let mut command = Command::new("/bin/bash");
             command.args([
                 "-c",
-                "eval \"exec dd bs=1 count=1 <&${1#--manager-launch-fd=}\"",
+                "exec dd bs=1 count=1 <&\"${1#--manager-launch-fd=}\"",
                 "launch",
             ]);
             command.stdout(std::process::Stdio::piped());
