@@ -29,7 +29,7 @@ The first Linux/macOS connection asks once for the computer administrator
 password to install the restricted system helper. Normal connect, disconnect,
 reconnect, automatic reconnect and later application starts do not ask again.
 Each VPN profile has its own stored credential and at most one running instance;
-different profiles can connect concurrently. Concurrent VPNs should use
+the manager currently permits one network-owning connection at a time. Stopping or unresolved cleanup retains this ownership. Future coordinated tunnels require verified platform capabilities. Standalone CLI concurrent VPNs should use
 non-overlapping split routes and should not both replace the default route or
 global DNS.
 
@@ -42,7 +42,7 @@ Desktop manager
 
 The [`app`](app/) directory contains a Tauri 2 + Svelte desktop manager for
 Linux, macOS and Windows. Each profile owns at most one connection, while
-different profiles can connect concurrently. It provides profile CRUD,
+the manager reserves shared network resources for one connection until exit and cleanup complete. It provides profile CRUD,
 state-aware connect/reconnect/disconnect actions and structured logs. Its
 desktop build compiles this repository's openfortivpn engine and bundles the
 resulting binary as an application resource.

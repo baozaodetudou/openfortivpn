@@ -2,7 +2,7 @@
 set -e
 
 if [ "$1" = "configure" ]; then
-  /usr/local/sbin/openfortivpn-manager-headless install \
-    --engine /usr/local/libexec/openfortivpn-manager-headless/openfortivpn \
+  /usr/lib/openfortivpn-manager-headless/manager install \
+    --engine /usr/lib/openfortivpn-manager-headless/openfortivpn \
     --quiet
 fi

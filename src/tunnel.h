@@ -81,6 +81,16 @@ struct tunnel {
 
 	struct ipv4_config ipv4;
 
+	int routes_apply_started;
+	int dns_apply_started;
+	int cleanup_attempted;
+	int cleanup_failed;
+	int network_apply_failed;
+	int manager_native_network;
+	int manager_native_started;
+	char manager_native_request[33];
+	unsigned int manager_native_index;
+
 	int (*on_ppp_if_up)(struct tunnel *tunnel);
 	int (*on_ppp_if_down)(struct tunnel *tunnel);
 };

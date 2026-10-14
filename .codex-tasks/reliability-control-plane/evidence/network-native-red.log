@@ -1,0 +1,45 @@
+-- Configuring done (0.5s)
+-- Generating done (0.1s)
+-- Build files have been written to: /Users/doumao/code/github/openfortivpn/build/release-quality
+[  2%] Building C object CMakeFiles/test_url_encoding.dir/tests/test_url_encoding.c.o
+[ 14%] Built target test_ppp
+[ 17%] Building C object CMakeFiles/openfortivpn.dir/src/main.c.o
+[ 20%] Building C object CMakeFiles/test_tls_policy.dir/tests/test_tls_policy.c.o
+[ 23%] Building C object CMakeFiles/test_tls_policy.dir/src/tls_policy.c.o
+[ 26%] Linking C executable test_url_encoding
+[ 29%] Building C object CMakeFiles/openfortivpn.dir/src/tls_policy.c.o
+[ 32%] Linking C executable test_tls_policy
+[ 32%] Built target test_url_encoding
+[ 35%] Building C object CMakeFiles/test_manager_control.dir/tests/test_manager_control.c.o
+[ 38%] Building C object CMakeFiles/openfortivpn.dir/src/config.c.o
+[ 38%] Built target test_tls_policy
+/Users/doumao/code/github/openfortivpn/tests/test_manager_control.c:40:40: error: call to undeclared function 'inet_addr'; ISO C99 and later do not support implicit function declarations [-Wimplicit-function-declaration]
+   40 |             config.gateway_ip.s_addr = inet_addr("192.0.2.9");
+      |                                        ^
+/Users/doumao/code/github/openfortivpn/tests/test_manager_control.c:40:40: note: did you mean 'cast_addr'?
+/Users/doumao/code/github/openfortivpn/src/ipv4.h:81:35: note: 'cast_addr' declared here
+   81 | static inline struct sockaddr_in *cast_addr(struct sockaddr *addr)
+      |                                   ^
+1 error generated.
+make[2]: *** [CMakeFiles/test_manager_control.dir/tests/test_manager_control.c.o] Error 1
+make[2]: *** Waiting for unfinished jobs....
+[ 41%] Building C object CMakeFiles/test_manager_control.dir/src/manager_control.c.o
+[ 44%] Building C object CMakeFiles/test_dns_policy.dir/tests/test_dns_policy.c.o
+[ 47%] Building C object CMakeFiles/openfortivpn.dir/src/event.c.o
+make[1]: *** [CMakeFiles/test_manager_control.dir/all] Error 2
+make[1]: *** Waiting for unfinished jobs....
+[ 50%] Building C object CMakeFiles/openfortivpn.dir/src/manager_control.c.o
+[ 52%] Building C object CMakeFiles/openfortivpn.dir/src/http.c.o
+[ 55%] Linking C executable test_dns_policy
+[ 58%] Building C object CMakeFiles/test_saml_policy.dir/tests/test_saml_policy.c.o
+[ 61%] Building C object CMakeFiles/openfortivpn.dir/src/io.c.o
+[ 64%] Linking C executable test_saml_policy
+[ 64%] Built target test_dns_policy
+[ 67%] Building C object CMakeFiles/openfortivpn.dir/src/tunnel.c.o
+[ 70%] Building C object CMakeFiles/openfortivpn.dir/src/ipv4.c.o
+[ 70%] Built target test_saml_policy
+[ 73%] Building C object CMakeFiles/openfortivpn.dir/src/userinput.c.o
+[ 76%] Building C object CMakeFiles/openfortivpn.dir/src/http_server.c.o
+[ 79%] Linking C executable openfortivpn
+[ 88%] Built target openfortivpn
+make: *** [all] Error 2

@@ -1,0 +1,61 @@
+   Compiling openfortivpn-manager v0.1.6 (/Users/doumao/code/github/openfortivpn/app/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.38s
+     Running unittests src/lib.rs (app/src-tauri/target/debug/deps/openfortivpn_manager_lib-34266f22be7abf02)
+
+running 53 tests
+test remote::tests::defaults_are_loopback_only_and_disabled ... ok
+test remote::tests::rejects_hostnames_and_zero_port ... ok
+test remote::tests::certificate_names_follow_the_configured_bind_address ... ok
+test remote::tests::bearer_comparison_requires_exact_token ... ok
+test tests::adapter_name_is_safe_bounded_and_deterministic ... ok
+test tests::adapter_name_distinguishes_reconnections ... ok
+test tests::adapter_name_falls_back_for_non_ascii_profile_name ... ok
+test tests::auto_reconnect_uses_bounded_exponential_backoff ... ok
+test remote::tests::generated_tokens_have_256_bits_of_random_input ... ok
+test tests::accepts_a_complete_valid_profile ... ok
+test tests::automatic_retry_excludes_manual_and_fatal_disconnects ... ok
+test tests::automatic_reconnect_reuses_its_cancellation_generation ... ok
+test tests::desktop_preferences_default_to_background_residency ... ok
+test backup::tests::portable_archive_rejects_internal_refs_orphans_and_missing_autoconnect_secrets ... ok
+test tests::different_profiles_can_reserve_connections_concurrently ... ok
+test tests::desktop_preferences_load_missing_fields_with_safe_defaults ... ok
+test tests::engine_state_mapping_preserves_terminal_states ... ok
+test tests::engine_event_includes_profile_mapping_for_fast_process_events ... ok
+test tests::late_events_cannot_revive_stopping_or_terminal_instances ... ok
+test authentication::tests::stopped_or_obsolete_desktop_challenge_cannot_write_and_lease_requires_exclusivity ... ok
+test tests::failed_precommit_write_keeps_repository_blocked_and_idle_recovery_preserves_old_ref ... ok
+test tests::legacy_engine_log_marks_tunnel_as_connected ... ok
+test tests::legacy_profile_file_marks_credential_state_for_one_time_migration ... ok
+test tests::loads_legacy_profiles_with_auto_connect_disabled ... ok
+test tests::explicit_missing_credential_is_not_rechecked_on_every_startup ... ok
+test tests::privilege_status_uses_frontend_field_names ... ok
+test tests::privileged_operations_use_the_fixed_system_sudo_binary ... ok
+test tests::reconnect_generation_is_monotonic_and_serialized ... ok
+test tests::profile_file_persists_credential_metadata_without_the_password ... ok
+test tests::rejects_line_break_injection_in_runtime_password ... ok
+test tests::rejects_profile_id_reserved_for_remote_access_token ... ok
+test tests::rejects_missing_required_profile_values ... ok
+test tests::rejects_line_break_injection_in_profile_fields ... ok
+test tests::rejects_passwords_the_engine_would_silently_change_or_truncate ... ok
+test tests::repeated_user_connect_reuses_the_running_instance ... ok
+test tests::renders_disabled_flags_and_omits_empty_optional_values ... ok
+test tests::renders_runtime_config_with_all_profile_options ... ok
+test tests::startup_is_hidden_only_for_background_autostart ... ok
+test tests::profile_removal_clears_credentials_instances_and_retry_state ... ok
+test tests::tray_status_summarizes_connection_lifecycle ... ok
+test tests::tunnel_up_is_the_only_event_that_finishes_connecting ... ok
+test tests::stale_startup_credential_reads_cannot_undo_a_user_change ... ok
+test tests::validates_trusted_certificate_sha256_digest ... ok
+test tests::malformed_profile_files_never_silently_replace_profiles_or_credentials ... ok
+test tests::retained_logs_are_bounded_filterable_and_chronological ... ok
+test tests::reader_panic_or_io_failure_cannot_be_treated_as_clean_eof ... ok
+test profile_repository::tests::repository_ownership_excludes_other_binaries_and_rejects_lock_symlinks ... ok
+test tests::local_vpn_credentials_are_private_and_round_trip ... ok
+test tests::component_hash_detects_payload_changes ... ok
+test tests::uncertain_metadata_commit_blocks_stale_cache_until_disk_reload ... ok
+test tests::local_vpn_credentials_reject_insecure_permissions_and_symlinks ... ok
+test authentication::tests::desktop_otp_uses_owned_pipe_once_and_does_not_change_credentials ... ok
+test profile_repository::tests::real_local_credential_and_metadata_files_recover_each_restore_fault_boundary ... ok
+
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.77s
+

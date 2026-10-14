@@ -106,7 +106,8 @@ void ipv4_win_clear_tun_luid(void)
 /*
  * Get the best route to a destination address.
  */
-static int get_best_route(struct in_addr dest, MIB_IPFORWARD_ROW2 *route)
+static int get_best_route(struct in_addr dest,
+                          MIB_IPFORWARD_ROW2 *route)
 {
 	SOCKADDR_INET dest_addr;
 	SOCKADDR_INET best_src;
@@ -209,7 +210,8 @@ int ipv4_drop_wrong_route(struct tunnel *tunnel)
 	return 0;
 }
 
-int ipv4_add_split_vpn_route(struct tunnel *tunnel, char *dest, char *mask,
+int ipv4_add_split_vpn_route(struct tunnel *tunnel, char *dest,
+                             char *mask,
                              char *gateway)
 {
 	struct rtentry *route;
@@ -300,8 +302,10 @@ int ipv4_set_tunnel_routes(struct tunnel *tunnel)
 
 			ret = add_route(route_dest(rt), route_mask(rt),
 			                route_gtw(rt), &tun_luid, 0, NULL);
-			if (ret)
+			if (ret) {
 				log_warn("Failed to add split route %d\n", i);
+				return ret;
+			}
 		}
 		return 0;
 	}
@@ -455,7 +459,9 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 		         "netsh interface ipv4 set dnsservers name=\"%s\" static %s primary validate=no",
 		         adapter_name, dns1_str);
 		log_debug("Running: %s\n", cmd);
-		system(cmd);
+		tunnel->dns_apply_started = 1;
+		if (system(cmd) != 0)
+			return -1;
 	}
 
 	if (dns2_str[0]) {
@@ -463,7 +469,8 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 		         "netsh interface ipv4 add dnsservers name=\"%s\" %s index=2 validate=no",
 		         adapter_name, dns2_str);
 		log_debug("Running: %s\n", cmd);
-		system(cmd);
+		if (system(cmd) != 0)
+			return -1;
 	}
 
 	/*
@@ -479,7 +486,8 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 	         "netsh interface ipv4 set interface \"%s\" metric=1",
 	         adapter_name);
 	log_debug("Running: %s\n", cmd);
-	system(cmd);
+	if (system(cmd) != 0)
+		return -1;
 
 	return 0;
 }
@@ -501,7 +509,8 @@ int ipv4_del_nameservers_from_resolv_conf(struct tunnel *tunnel)
 	         "netsh interface ipv4 set dnsservers name=\"%s\" dhcp",
 	         adapter_name);
 	log_debug("Running: %s\n", cmd);
-	system(cmd);
+	if (system(cmd) != 0)
+		return -1;
 
 	return 0;
 }

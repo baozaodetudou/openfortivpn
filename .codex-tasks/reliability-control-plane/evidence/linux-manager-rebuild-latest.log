@@ -1,0 +1,4 @@
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+   Compiling openfortivpn-manager-http v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-http)
+   Compiling openfortivpn-manager-headless v0.1.6 (/Users/doumao/code/github/openfortivpn/headless)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 44.71s

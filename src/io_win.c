@@ -25,6 +25,7 @@
 #include "wintun.h"
 #include "ssl.h"
 #include "log.h"
+#include "thread_group.h"
 
 #include <windows.h>
 #include <pthread.h>
@@ -107,8 +108,13 @@ static struct ppp_packet *pool_pop(struct ppp_packet_pool *pool)
 	struct ppp_packet *packet;
 
 	pthread_mutex_lock(&pool->mutex);
-	while (pool->list_head == NULL)
+	while (pool->list_head == NULL
+	       && !InterlockedCompareExchange(&shutting_down, 0, 0))
 		pthread_cond_wait(&pool->new_data, &pool->mutex);
+	if (InterlockedCompareExchange(&shutting_down, 0, 0)) {
+		pthread_mutex_unlock(&pool->mutex);
+		return NULL;
+	}
 	packet = pool->list_head;
 	pool->list_head = packet->next;
 	pthread_mutex_unlock(&pool->mutex);
@@ -125,16 +131,12 @@ static struct ppp_packet *pool_pop(struct ppp_packet_pool *pool)
 /*
  * Push a poison pill to unblock a thread waiting in pool_pop.
  */
-static void pool_poison(struct ppp_packet_pool *pool)
+static void pool_stop(struct ppp_packet_pool *pool)
 {
-	struct ppp_packet *pill;
-
-	pill = malloc(sizeof(*pill) + 6);
-	if (!pill)
-		return;
-	pill->len = 0;
-	pill->next = NULL;
-	pool_push(pool, pill);
+	/* Wake without allocating: shutdown must work under memory pressure. */
+	pthread_mutex_lock(&pool->mutex);
+	pthread_cond_broadcast(&pool->new_data);
+	pthread_mutex_unlock(&pool->mutex);
 }
 
 /*
@@ -305,7 +307,8 @@ static void *tun_read_thread(void *arg)
 		if (wait_ret != WAIT_OBJECT_0)
 			break;
 
-		while ((pkt = api->ReceivePacket(session,
+		while (!InterlockedCompareExchange(&shutting_down, 0, 0) &&
+		       (pkt = api->ReceivePacket(session,
 		                                 &pkt_size)) != NULL) {
 			uint8_t *ppp_data;
 			size_t ppp_len;
@@ -399,12 +402,16 @@ static void *if_config_thread(void *arg)
 	log_debug("%s thread\n", __func__);
 
 	SEM_WAIT(&sem_if_config);
+	if (InterlockedCompareExchange(&shutting_down, 0, 0))
+		return NULL;
 
 	/* Unblock tun_read and tun_write */
 	SEM_POST(&sem_ppp_ready);
 	SEM_POST(&sem_ppp_ready);
 
 	while (timeout > 0) {
+		if (InterlockedCompareExchange(&shutting_down, 0, 0))
+			return NULL;
 		if (ppp_interface_is_up(tunnel)) {
 			if (tunnel->on_ppp_if_up != NULL)
 				if (tunnel->on_ppp_if_up(tunnel))
@@ -423,6 +430,7 @@ static void *if_config_thread(void *arg)
 
 	return NULL;
 error:
+	tunnel->network_apply_failed = 1;
 	SEM_POST(&sem_stop_io);
 	return NULL;
 }
@@ -432,11 +440,11 @@ int io_loop(struct tunnel *tunnel)
 	int tcp_nodelay_flag = 1;
 	int ret = 0;
 
-	pthread_t tun_read_thr;
-	pthread_t tun_write_thr;
-	pthread_t ssl_read_thr;
-	pthread_t ssl_write_thr;
-	pthread_t if_config_thr;
+	struct ofv_thread_group workers = {0};
+
+	void *(*entries[])(void *) = {ssl_read_thread, ssl_write_thread,
+	                              tun_read_thread, tun_write_thread, if_config_thread
+	                             };
 
 	InterlockedExchange(&shutting_down, 0);
 
@@ -453,6 +461,7 @@ int io_loop(struct tunnel *tunnel)
 	               sizeof(int))) {
 		log_error("setsockopt TCP_NODELAY: %d\n",
 		          WSAGetLastError());
+		ret = 1;
 		goto err_cleanup;
 	}
 
@@ -482,18 +491,12 @@ int io_loop(struct tunnel *tunnel)
 	}
 
 	/* Create worker threads */
-	if (pthread_create(&ssl_read_thr, NULL,
-	                   ssl_read_thread, tunnel) ||
-	    pthread_create(&ssl_write_thr, NULL,
-	                   ssl_write_thread, tunnel) ||
-	    pthread_create(&tun_read_thr, NULL,
-	                   tun_read_thread, tunnel) ||
-	    pthread_create(&tun_write_thr, NULL,
-	                   tun_write_thread, tunnel) ||
-	    pthread_create(&if_config_thr, NULL,
-	                   if_config_thread, tunnel)) {
-		log_error("Failed to create I/O threads\n");
-		goto err_cleanup;
+	for (size_t i = 0; i < 5; i++) {
+		ret = ofv_thread_start(&workers, entries[i], tunnel, pthread_create);
+		if (ret) {
+			log_error("Failed to create I/O worker\n");
+			goto stop_workers;
+		}
 	}
 
 	/* Block until any thread signals shutdown */
@@ -502,49 +505,41 @@ int io_loop(struct tunnel *tunnel)
 	/*
 	 * Graceful shutdown sequence:
 	 * 1. Set shutdown flag so loops check on next iteration
-	 * 2. Close the SSL socket — unblocks ssl_read/ssl_write
-	 * 3. End the wintun session — unblocks tun_read/tun_write
-	 * 4. Poison the packet pools — unblocks pool_pop waiters
-	 * 5. Join all threads (they exit through normal error paths)
+	 * 2. Close the socket and wake queues/semaphores
+	 * 3. Join only successfully created workers
+	 * 4. Free TLS and Wintun objects after the last consumer exits
 	 */
+stop_workers:
 	log_info("Shutting down I/O...\n");
 	InterlockedExchange(&shutting_down, 1);
 
 	/* Unblock SSL threads by closing the socket */
-	if (tunnel->ssl_handle) {
-		SSL_shutdown(tunnel->ssl_handle);
-		SSL_free(tunnel->ssl_handle);
-		tunnel->ssl_handle = NULL;
-	}
 	if (tunnel->ssl_socket >= 0) {
+		shutdown(tunnel->ssl_socket, SD_BOTH);
 		closesocket(tunnel->ssl_socket);
 		tunnel->ssl_socket = -1;
 	}
 
-	/* Unblock TUN threads by ending the session */
-	if (tunnel->tun_session) {
-		struct wintun_api *api =
-		        (struct wintun_api *)tunnel->tun_adapter;
-
-		api->EndSession(
-		        (WINTUN_SESSION_HANDLE)tunnel->tun_session);
-		tunnel->tun_session = NULL;
-	}
-
 	/* Unblock pool_pop waiters */
-	pool_poison(&tunnel->pty_to_ssl_pool);
-	pool_poison(&tunnel->ssl_to_pty_pool);
+	pool_stop(&tunnel->pty_to_ssl_pool);
+	pool_stop(&tunnel->ssl_to_pty_pool);
 
 	/* Unblock threads still waiting on semaphores */
 	SEM_POST(&sem_ppp_ready);
 	SEM_POST(&sem_ppp_ready);
 	SEM_POST(&sem_if_config);
 
-	pthread_join(ssl_read_thr, NULL);
-	pthread_join(ssl_write_thr, NULL);
-	pthread_join(tun_read_thr, NULL);
-	pthread_join(tun_write_thr, NULL);
-	pthread_join(if_config_thr, NULL);
+	ret |= ofv_thread_join(&workers, 0);
+	if (tunnel->ssl_handle) {
+		SSL_free(tunnel->ssl_handle);
+		tunnel->ssl_handle = NULL;
+	}
+	if (tunnel->tun_session) {
+		struct wintun_api *api = (struct wintun_api *)tunnel->tun_adapter;
+
+		api->EndSession((WINTUN_SESSION_HANDLE)tunnel->tun_session);
+		tunnel->tun_session = NULL;
+	}
 
 	log_info("I/O threads stopped.\n");
 

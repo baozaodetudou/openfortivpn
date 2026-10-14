@@ -28,6 +28,8 @@
 #include "userinput.h"
 #include "ssl.h"
 #include "event.h"
+#include "manager_control.h"
+#include "tls_policy.h"
 #include "exit_codes.h"
 
 #include <winsock2.h>
@@ -250,7 +252,7 @@ int ssl_connect(struct tunnel *tunnel)
 	/* TCP connect */
 	ret = tcp_connect(tunnel);
 	if (ret)
-		return ret;
+		return OFV_EXIT_TCP_FAILED;
 
 	/* Set up SSL context */
 	tunnel->ssl_context = SSL_CTX_new(SSLv23_client_method());
@@ -271,6 +273,9 @@ int ssl_connect(struct tunnel *tunnel)
 		                    SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
 	}
 
+	SSL_CTX_set_verify(tunnel->ssl_context, SSL_VERIFY_PEER,
+	                   tls_defer_verification);
+
 	/* Load CA certificate if specified */
 	if (tunnel->config->ca_file) {
 		if (!SSL_CTX_load_verify_locations(tunnel->ssl_context,
@@ -278,6 +283,8 @@ int ssl_connect(struct tunnel *tunnel)
 		                                   NULL)) {
 			log_error("Could not load CA certificate: %s\n",
 			          tunnel->config->ca_file);
+			ret = OFV_EXIT_CERT_FAILED;
+			goto err;
 		}
 	} else {
 		SSL_CTX_set_default_verify_paths(tunnel->ssl_context);
@@ -332,54 +339,21 @@ int ssl_connect(struct tunnel *tunnel)
 		goto err;
 	}
 
-	/* Verify server certificate */
-	if (!tunnel->config->insecure_ssl) {
-		long verify_result = SSL_get_verify_result(tunnel->ssl_handle);
+	/* Certificate verification is mandatory even with insecure-ssl. */
+	{
+		char digest[SHA256STRLEN];
+		X509 *cert = SSL_get_peer_certificate(tunnel->ssl_handle);
+		int rejected = tls_certificate_policy(
+		                       cert, SSL_get_verify_result(tunnel->ssl_handle),
+		                       tunnel->config->gateway_host,
+		                       tunnel->config->cert_whitelist, digest);
 
-		if (verify_result != X509_V_OK) {
-			X509 *cert = SSL_get_peer_certificate(tunnel->ssl_handle);
-
-			if (cert) {
-				/* Check against trusted cert whitelist */
-				unsigned char digest[32];
-				unsigned int digest_len = sizeof(digest);
-				char digest_str[65];
-				struct x509_digest *trusted;
-				int found = 0;
-
-				X509_digest(cert, EVP_sha256(), digest,
-				            &digest_len);
-				for (unsigned int i = 0; i < digest_len; i++)
-					sprintf(&digest_str[i * 2], "%02x",
-					        digest[i]);
-				digest_str[64] = '\0';
-
-				for (trusted = tunnel->config->cert_whitelist;
-				     trusted; trusted = trusted->next) {
-					if (strcasecmp(trusted->data,
-					               digest_str) == 0) {
-						found = 1;
-						break;
-					}
-				}
-
-				X509_free(cert);
-
-				if (!found) {
-					log_error("Server certificate verification failed.\n");
-					log_error("Certificate digest: %s\n",
-					          digest_str);
-					event_emit_cert_error(digest_str,
-					                      "verification_failed");
-					ret = OFV_EXIT_CERT_FAILED;
-					goto err;
-				}
-				log_debug("Trusted certificate matched.\n");
-			} else {
-				log_error("No server certificate received.\n");
-				ret = 1;
-				goto err;
-			}
+		X509_free(cert);
+		if (rejected) {
+			log_error("Server certificate verification failed: %s\n", digest);
+			event_emit_cert_error(digest, "verification_failed");
+			ret = OFV_EXIT_CERT_FAILED;
+			goto err;
 		}
 	}
 
@@ -474,18 +448,25 @@ static int on_ppp_if_up(struct tunnel *tunnel)
 
 	/* Set up routes */
 	if (tunnel->config->set_routes) {
+		tunnel->routes_apply_started = 1;
 		int ret = ipv4_set_tunnel_routes(tunnel);
 
-		if (ret)
-			log_warn("Could not set VPN routes.\n");
+		if (ret) {
+			event_emit_error(OFV_EXIT_CONFIG_FAILED, "network",
+			                 "Route application failed");
+			return -1;
+		}
 	}
 
 	/* Set up DNS */
 	if (tunnel->config->set_dns) {
 		int ret = ipv4_add_nameservers_to_resolv_conf(tunnel);
 
-		if (ret)
-			log_warn("Could not configure DNS.\n");
+		if (ret) {
+			event_emit_error(OFV_EXIT_CONFIG_FAILED, "network",
+			                 "DNS application failed");
+			return -1;
+		}
 	}
 
 	{
@@ -510,16 +491,28 @@ static int on_ppp_if_up(struct tunnel *tunnel)
  */
 static int on_ppp_if_down(struct tunnel *tunnel)
 {
+	int failed = 0;
+
+	if (tunnel->cleanup_attempted)
+		return tunnel->cleanup_failed;
+	tunnel->cleanup_attempted = 1;
 	log_info("Tunnel interface is DOWN.\n");
 	event_emit("tunnel_down", "\"reason\":\"interface_down\"");
 
-	if (tunnel->config->set_dns)
-		ipv4_del_nameservers_from_resolv_conf(tunnel);
+	if (tunnel->dns_apply_started)
+		failed |= ipv4_del_nameservers_from_resolv_conf(tunnel) != 0;
 
-	if (tunnel->config->set_routes)
-		ipv4_restore_routes(tunnel);
+	if (tunnel->routes_apply_started)
+		failed |= ipv4_restore_routes(tunnel) != 0;
 
-	return 0;
+	if (!failed) {
+		tunnel->routes_apply_started = 0;
+		tunnel->dns_apply_started = 0;
+	}
+	tunnel->cleanup_failed = failed;
+	event_emit("cleanup_result", "\"success\":%s",
+	           failed ? "false" : "true");
+	return failed;
 }
 
 int run_tunnel(struct vpn_config *config)
@@ -563,7 +556,7 @@ int run_tunnel(struct vpn_config *config)
 	log_debug("Establishing TLS connection\n");
 	ret = ssl_connect(&tunnel);
 	if (ret) {
-		if (ret != OFV_EXIT_CERT_FAILED)
+		if (ret != OFV_EXIT_CERT_FAILED && ret != OFV_EXIT_TCP_FAILED)
 			ret = OFV_EXIT_TLS_FAILED;
 		goto err_tunnel;
 	}
@@ -594,7 +587,7 @@ int run_tunnel(struct vpn_config *config)
 
 	ret = ssl_connect(&tunnel);
 	if (ret) {
-		if (ret != OFV_EXIT_CERT_FAILED)
+		if (ret != OFV_EXIT_CERT_FAILED && ret != OFV_EXIT_TCP_FAILED)
 			ret = OFV_EXIT_TLS_FAILED;
 		goto err_tunnel;
 	}
@@ -608,6 +601,10 @@ int run_tunnel(struct vpn_config *config)
 		goto err_tunnel;
 	}
 
+	if (manager_control_network_gate(&tunnel) != 0) {
+		ret = OFV_EXIT_CONFIG_FAILED;
+		goto err_tunnel;
+	}
 	/* Step 4: create wintun adapter (replaces pppd_run) */
 	event_emit("state_change", "\"state\":\"creating_adapter\"");
 	log_debug("Creating wintun adapter\n");
@@ -632,15 +629,14 @@ int run_tunnel(struct vpn_config *config)
 	tunnel.state = STATE_CONNECTING;
 
 	/* Step 6: I/O loop (PPP negotiation + packet forwarding) */
-	event_emit("state_change", "\"state\":\"connected\"");
+	event_emit("state_change", "\"state\":\"negotiating\"");
 	log_debug("Starting IO through the tunnel\n");
-	io_loop(&tunnel);
+	ret = io_loop(&tunnel) ? OFV_EXIT_TUNNEL_FAILED : OFV_EXIT_OK;
 
 	event_emit("state_change", "\"state\":\"disconnecting\"");
 	log_debug("Disconnecting\n");
-	if (tunnel.state == STATE_UP)
-		if (tunnel.on_ppp_if_down != NULL)
-			tunnel.on_ppp_if_down(&tunnel);
+	if (tunnel.on_ppp_if_down != NULL)
+		tunnel.on_ppp_if_down(&tunnel);
 
 	tunnel.state = STATE_DISCONNECTING;
 
@@ -649,6 +645,12 @@ err_start_tunnel:
 	log_info("Destroyed wintun adapter.\n");
 
 err_tunnel:
+	if (!tunnel.cleanup_attempted)
+		on_ppp_if_down(&tunnel);
+	if (tunnel.cleanup_failed || tunnel.network_apply_failed)
+		ret = OFV_EXIT_CONFIG_FAILED;
+	if (ret != OFV_EXIT_OK)
+		event_emit_error(ret, "engine", ofv_exit_reason(ret));
 	log_info("Closed connection to gateway.\n");
 	tunnel.state = STATE_DOWN;
 

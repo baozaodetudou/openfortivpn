@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "checkpoint": "shared-connect-admission",
+  "host": "macos",
+  "date": "2026-10-09",
+  "sourceStable": true,
+  "changes": [
+    "Core pure typed admission is shared by desktop and headless adapters while they retain their runtime lock through reservation.",
+    "Stopping and recovery-required ownership can never be reused as a successful duplicate connect.",
+    "Only a healthy published User intent may be reused; Startup and Automatic owners are busy.",
+    "Headless automatic startup now actually supplies Startup origin through a private command-dispatch entry point.",
+    "Repository recovery, restore, mutation, shutdown, orphan recovery, unpublished starts and conflicting network ownership all gate admission before reuse.",
+    "Existing desktop Chinese error presentation and v1/Tauri shapes are preserved; process, generation, retry and cleanup ownership remain in adapters."
+  ],
+  "validation": [
+    {"stage": "red", "command": "cargo test --locked --manifest-path crates/manager-core/Cargo.toml connection_service::tests -- --nocapture", "exitCode": 101, "failed": 5, "session": 52157, "baseline": "temporary old desktop reuse policy"},
+    {"stage": "red", "command": "cargo test --locked --manifest-path app/src-tauri/Cargo.toml --lib desktop_connect_admission -- --nocapture", "exitCode": 101, "failed": 3, "session": 74369, "baseline": "temporary old desktop reuse policy"},
+    {"stage": "green", "command": "cargo test --locked --manifest-path crates/manager-core/Cargo.toml connection_service::tests -- --nocapture", "exitCode": 0, "passed": 5, "session": 42349},
+    {"stage": "green", "command": "cargo test --locked --manifest-path app/src-tauri/Cargo.toml --all-targets --all-features", "exitCode": 0, "passed": 56, "session": 7199},
+    {"stage": "green", "command": "cargo test --locked --manifest-path headless/Cargo.toml --all-targets --all-features", "exitCode": 0, "libraryPassed": 52, "cliPassed": 4, "storageIntegrationPassed": 2, "ignored": 2, "session": 93951},
+    {"stage": "green", "command": "cargo clippy --locked --manifest-path crates/manager-core/Cargo.toml --all-targets --all-features -- -D warnings", "exitCode": 0, "session": 36598},
+    {"stage": "green", "command": "cargo clippy --locked --manifest-path app/src-tauri/Cargo.toml --all-targets --all-features -- -D warnings", "exitCode": 0, "session": 25250},
+    {"stage": "green", "command": "cargo clippy --locked --manifest-path headless/Cargo.toml --all-targets --all-features -- -D warnings", "exitCode": 0, "session": 24169},
+    {"stage": "green", "command": "cargo fmt --manifest-path headless/Cargo.toml --all -- --check", "exitCode": 0, "session": 71984},
+    {"stage": "green", "command": "cargo fmt --manifest-path app/src-tauri/Cargo.toml --all -- --check", "exitCode": 0, "session": 17442}
+  ],
+  "compatibilityNotes": [
+    "An unresolved recovery owner from another profile now returns typed RecoveryRequired instead of generic NetworkConflict; the existing regression expectation was updated to this shared semantic classification.",
+    "Headless published desired intent can be reused before its child is spawned, but a desktop credential worker without a published instance is only a busy reservation."
+  ],
+  "limits": [
+    "Full scripts/verify-local.zsh and long-running stress are coordinated by the root agent after source stabilization.",
+    "No host VPN/network state was modified by these regression tests.",
+    "No Windows runtime acceptance is implied by this checkpoint."
+  ]
+}

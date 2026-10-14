@@ -1,0 +1,43 @@
+[  5%] Built target test_url_encoding
+[ 20%] Built target test_ppp
+[ 26%] Built target test_tls_policy
+[ 29%] Building C object CMakeFiles/test_manager_control.dir/tests/test_manager_control.c.o
+[ 41%] Built target test_saml_policy
+[ 41%] Built target test_dns_policy
+[ 44%] Building C object CMakeFiles/test_manager_control.dir/src/manager_control.c.o
+[ 50%] Built target test_thread_group
+[ 52%] Building C object CMakeFiles/test_manager_control.dir/src/event.c.o
+[ 55%] Linking C executable test_manager_control
+[ 58%] Building C object CMakeFiles/openfortivpn.dir/src/main.c.o
+[ 61%] Building C object CMakeFiles/openfortivpn.dir/src/event.c.o
+[ 64%] Building C object CMakeFiles/openfortivpn.dir/src/manager_control.c.o
+[ 67%] Building C object CMakeFiles/openfortivpn.dir/src/http.c.o
+[ 70%] Building C object CMakeFiles/openfortivpn.dir/src/io.c.o
+[ 73%] Building C object CMakeFiles/openfortivpn.dir/src/tunnel.c.o
+[ 76%] Building C object CMakeFiles/openfortivpn.dir/src/ipv4.c.o
+[ 79%] Building C object CMakeFiles/openfortivpn.dir/src/http_server.c.o
+[ 82%] Linking C executable openfortivpn
+[ 82%] Built target test_manager_control
+[100%] Built target openfortivpn
+Internal ctest changing into directory: /artifacts/engine
+Test project /artifacts/engine
+    Start 1: ppp_state_machine
+1/8 Test #1: ppp_state_machine ................   Passed    0.00 sec
+    Start 2: url_encoding
+2/8 Test #2: url_encoding .....................   Passed    0.00 sec
+    Start 3: tls_certificate_policy
+3/8 Test #3: tls_certificate_policy ...........   Passed    0.37 sec
+    Start 4: engine_capabilities
+4/8 Test #4: engine_capabilities ..............   Passed    0.01 sec
+    Start 5: manager_private_control
+5/8 Test #5: manager_private_control ..........   Passed    0.00 sec
+    Start 6: dns_existing_entries
+6/8 Test #6: dns_existing_entries .............   Passed    0.00 sec
+    Start 7: saml_callback_policy
+7/8 Test #7: saml_callback_policy .............   Passed    0.00 sec
+    Start 8: partial_worker_startup
+8/8 Test #8: partial_worker_startup ...........   Passed    0.02 sec
+
+100% tests passed, 0 tests failed out of 8
+
+Total Test time (real) =   0.45 sec

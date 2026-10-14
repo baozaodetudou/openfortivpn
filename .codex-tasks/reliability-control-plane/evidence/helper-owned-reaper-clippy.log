@@ -1,0 +1,4 @@
+    Blocking waiting for file lock on package cache
+    Checking openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+    Checking openfortivpn-manager-helper v0.1.6 (/Users/doumao/code/github/openfortivpn/app/src-tauri/helper)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.42s

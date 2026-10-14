@@ -1,0 +1,8 @@
+
+> openfortivpn-manager@0.1.6 check /Users/doumao/code/github/openfortivpn/app
+> svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && node ../web/build.mjs --check
+
+Loading svelte-check in workspace: /Users/doumao/code/github/openfortivpn/app
+Getting Svelte diagnostics...
+
+svelte-check found 0 errors and 0 warnings

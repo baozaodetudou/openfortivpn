@@ -1,0 +1,573 @@
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+   Compiling openfortivpn-manager-http v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-http)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.65s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-a96e20202eccae65)
+
+running 70 tests
+test lifecycle::tests::auth_tls_config_and_network_mutation_errors_do_not_retry ... ok
+test lifecycle::tests::fake_clock_never_retries_cancelled_or_obsolete_intent ... ok
+test json_buffer::tests::serialization_failure_returns_lease_and_pool_retention_stays_bounded ... ok
+test lifecycle::tests::cleanup_must_finish_after_readiness_and_failures_are_sticky ... ok
+test control::tests::responses_are_single_use_bound_to_attempt_generation_and_deadline ... ok
+test control::tests::cancelling_one_profile_leaves_other_challenges_and_rejects_control_injection ... ok
+test lifecycle::tests::private_events_must_match_the_bound_attempt_before_readiness_or_cleanup ... ok
+test lifecycle::tests::private_or_v2_attempt_never_accepts_text_readiness_or_protocol_downgrade ... ok
+test lifecycle::tests::successful_cleanup_and_partial_output_are_distinct ... ok
+test diagnostics::tests::unknown_fields_and_free_text_cannot_leak_into_export ... ok
+test json_buffer::tests::overlapping_leases_never_reuse_live_bytes_and_dropped_responses_recycle_capacity ... ok
+test network::tests::a_second_crash_during_recovery_never_erases_uncertain_ownership ... ok
+test network::tests::changed_networks_invalidate_lease_replays_without_mutating_resources ... ok
+test network::tests::failed_commit_cannot_be_retried_as_a_successful_active_transaction ... ok
+test network::tests::apply_fault_matrix_rolls_back_known_creations_at_every_persistence_boundary ... ok
+test network::tests::journal_failure_prevents_mutation_and_interrupted_apply_never_deletes_unowned_resources ... ok
+test network::tests::preexisting_resources_survive_and_external_changes_block_cleanup ... ok
+test network::tests::overlap_global_dns_and_domain_suffixes_conflict_before_any_mutation ... ok
+test network::tests::uncertain_resource_retains_lease_but_does_not_prevent_known_resource_rollback ... ok
+test network::tests::shared_gateway_exception_is_removed_only_after_last_created_owner ... ok
+test network::tests::sharing_an_already_active_gateway_retains_creation_ownership ... ok
+test actor::tests::idle_mailboxes_expire_and_a_panicking_job_does_not_lose_the_queue ... ok
+test log_buffer::tests::oversized_fields_cannot_evict_everything_or_break_accounting ... ok
+test network_macos::tests::supplemental_dictionary_is_exact_and_external_properties_change_ownership ... ok
+test log_buffer::tests::serialization_budget_covers_escaping_utf8_and_max_integer_fields ... ok
+test log_buffer::tests::full_snapshots_share_retained_entries_and_keep_wire_shape_after_eviction ... ok
+test credential_journal::tests::credential_failure_retains_intent_and_backup_refs_until_retry ... ok
+test process_output::tests::cancellation_joins_reader_even_when_writer_remains_alive ... ok
+test process_output::tests::drains_output_before_eof ... ok
+test protocol::tests::decodes_utf8_across_chunks_and_final_record ... ok
+test protocol::tests::diagnostic_output_does_not_contain_synthetic_secrets ... ok
+test private_file::locking_tests::live_shared_component_guards_exclude_installers_until_every_worker_exits ... ok
+test protocol::tests::late_and_duplicate_events_never_move_the_cursor_backwards ... ok
+test repository::tests::legacy_and_versioned_metadata_preserve_records_but_future_versions_fail_closed ... ok
+test protocol::tests::discards_oversized_event_and_resumes_at_next_record ... ok
+test repository::tests::superseded_intents_preserve_current_and_backup_credentials_and_collect_both_orphans ... ok
+test saml::tests::callbacks_require_loopback_exact_path_method_state_and_live_generation ... ok
+test retention::tests::idle_time_eviction_and_capacity_use_a_fake_clock ... ok
+test saml::tests::expiry_cancellation_and_request_injection_never_yield_a_session ... ok
+test saml_broker::tests::parser_rejects_duplicate_host_headers_bodies_and_partial_requests ... ok
+test saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session ... ok
+test supervisor::tests::cancelled_supervisor_reaps_the_exact_async_child ... ok
+test private_input::tests::full_pipe_times_out_instead_of_blocking_control_plane ... ok
+test saml_broker::tests::cancellation_and_expiry_close_the_listener_without_a_response ... ok
+test actor::tests::a_thousand_interleaved_commands_never_overlap_in_one_profile ... ok
+test private_input::tests::private_input_delivers_and_cancellation_rejects_more_secrets ... ok
+test credential_journal::tests::malformed_or_unsafe_journal_never_deletes_any_credential ... ok
+test supervisor::tests::shared_deadline_aborts_and_joins_every_incomplete_task ... ok
+test validation::tests::normalizes_pins ... ok
+test validation::tests::validates_bytes_without_trimming_secrets ... ok
+test windows_process::tests::a_reused_pid_is_a_different_process ... ok
+test supervisor::tests::inherited_writer_does_not_keep_a_terminal_attempt_draining_forever ... ok
+test engine::tests::nonresponsive_probe_is_killed_and_reaped ... ok
+test network_authority::tests::invalid_records_and_symlinks_fail_closed_before_recovery_callback ... ok
+test engine::tests::unknown_successful_capability_protocol_never_downgrades_silently ... ok
+test network_authority::tests::installer_and_process_binding_cannot_bypass_the_active_owner ... ok
+test network_authority::tests::crashed_worker_or_failed_cleanup_keeps_the_durable_reservation ... ok
+test network_authority::tests::every_manager_is_excluded_until_reap_and_cleanup_are_confirmed ... ok
+test credential_journal::tests::each_crash_boundary_and_later_save_recovers_against_the_durable_ref ... ok
+test tls_identity::tests::operator_identity_is_preserved_and_invalid_replacement_is_rejected ... ok
+test engine::tests::legacy_version_does_not_claim_event_protocol_support ... ok
+test supervisor::tests::dropping_an_adapter_preserves_the_child_for_the_reaper ... ok
+test tls_identity::tests::managed_ipv6_bind_change_regenerates_and_symlinked_key_is_not_read ... ok
+test bundle::tests::pending_bundle_is_bound_to_exact_targets_and_sudoers_mode ... ok
+test bundle::tests::complete_bundle_rolls_back_and_preserves_executable_modes ... ok
+test bundle::tests::external_replacement_and_corrupt_retained_blob_block_recovery_before_writes ... ok
+test tls_identity::tests::interruption_at_each_write_recovers_the_complete_pair ... ok
+test log_buffer::tests::stress_retention_counts_all_fields_and_preserves_cursor_order ... ok
+test bundle::tests::interruption_at_each_replacement_boundary_restores_a_complete_old_bundle ... ok
+test network::tests::independently_opened_stores_preserve_one_hundred_concurrent_reservations ... ok
+
+test result: ok. 70 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.10s
+
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_http-32f5a0b0b2d6e654)
+
+running 9 tests
+test tests::empty_or_wrong_tokens_are_never_authorized ... ok
+test tests::typed_conflicts_do_not_depend_on_message_language ... ok
+test tests::rotation_revokes_old_tokens_on_every_existing_server_clone ... ok
+test v2::tests::authentication_precedes_parsing_and_bad_bodies_never_echo_secrets ... ok
+test v2::tests::authentication_routes_authorize_and_never_echo_malformed_secrets ... ok
+test v2::tests::logs_report_truncation_and_reject_a_previous_server_session ... ok
+test v2::tests::diagnostics_are_authenticated_and_have_a_versioned_allowlist ... ok
+test v2::tests::duplicate_commands_execute_once_and_scope_conflicts_are_explicit ... ok
+test tests::response_bytes_remain_owned_until_every_slow_reader_drops_them ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+    Checking openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+    Checking openfortivpn-manager-http v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-http)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.93s
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+   Compiling openfortivpn-manager-http v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-http)
+   Compiling openfortivpn-manager-headless v0.1.6 (/Users/doumao/code/github/openfortivpn/headless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.79s
+     Running unittests src/lib.rs (headless/target/debug/deps/openfortivpn_manager_headless-fca1d01ffbe0cb2a)
+
+running 43 tests
+test install::tests::unit_has_security_and_restart_settings ... ok
+test manager::tests::kill_is_not_sent_after_engine_executable_changes ... ok
+test manager::tests::signal_is_sent_only_for_the_captured_engine_process ... ok
+test manager::tests::term_is_not_sent_after_pid_or_pgid_reuse ... ok
+test install::tests::engine_discovery_finds_repository_build ... ok
+test manager::tests::premature_connected_state_is_not_ready ... ok
+test api::tests::root_serves_the_token_login_web_console ... ok
+test api::tests::health_is_public_but_api_requires_bearer_token ... ok
+test api::tests::invalid_profile_uses_a_typed_400_envelope ... ok
+test api::tests::disk_token_rotation_invalidates_old_token_without_stopping_manager ... ok
+test api::tests::profile_api_never_returns_vpn_password ... ok
+test manager::tests::stopping_reservation_rejects_edit_and_connect ... ok
+test manager::tests::pipe_errors_and_malformed_output_never_confirm_complete_cleanup ... ok
+test api::tests::v2_revisions_survive_restart_and_reject_stale_changes ... ok
+test storage::tests::mismatched_operator_private_key_is_never_overwritten ... ok
+test storage::tests::only_one_service_can_own_the_runtime_directory ... ok
+test storage::tests::rejects_configuration_injection ... ok
+test storage::tests::rejects_passwords_the_c_parser_cannot_preserve ... ok
+test manager::tests::authentication_failure_blocks_automatic_retry ... ok
+test storage::tests::invalid_backup_never_changes_current_profile_or_secret ... ok
+test storage::tests::secrets_symlink_is_rejected_before_reading ... ok
+test tests::ipv6_bind_uses_socket_address_formatting ... ok
+test storage::tests::runtime_config_is_private ... ok
+test storage::tests::bind_change_regenerates_the_certificate_identity ... ok
+test storage::tests::operator_certificate_is_preserved_and_wrong_identity_is_rejected ... ok
+test manager::tests::stale_failure_cannot_clear_a_new_attempt ... ok
+test storage::tests::passwords_are_separate_and_private ... ok
+test storage::tests::interrupted_profile_secret_pair_is_recovered_before_reading ... ok
+test storage::tests::legacy_migration_keeps_a_private_consistent_pair_and_future_schema_is_not_overwritten ... ok
+test manager::tests::crash_before_identity_capture_blocks_auto_connect_and_other_profiles ... ok
+test storage::tests::session_password_is_connectable_but_not_persisted ... ok
+test tests::offline_diagnostics_never_exports_credentials_or_profile_identity ... ok
+test storage::tests::legacy_downgrade_is_offline_preserves_password_pair_and_keeps_a_private_backup ... ok
+test manager::tests::private_otp_and_pre_adapter_lease_flow_without_persisting_responses ... ok
+test manager::tests::legacy_network_ownership_blocks_conflicting_profiles ... ok
+test tests::occupied_https_port_never_starts_auto_connect ... ok
+test storage::tests::backup_restore_is_private_revisioned_and_refuses_online_restore ... ok
+test manager::tests::recovery_acknowledgement_rejects_a_live_owned_process ... ok
+test manager::tests::unexpected_exit_retries_continuously_with_a_bounded_delay ... ok
+test manager::tests::delayed_stop_retains_ownership_until_reaped ... ok
+test storage::tests::concurrent_successful_saves_are_not_lost ... ok
+test manager::tests::independent_managers_share_one_system_network_authority ... ok
+test manager::tests::failed_network_cleanup_blocks_new_connections_after_process_exit ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.87s
+
+     Running unittests src/main.rs (headless/target/debug/deps/openfortivpn_manager_headless-9c7ad4dd3b8a49d3)
+
+running 4 tests
+test tests::debian_postinst_uses_quiet_install_without_token_opt_in ... ok
+test tests::quiet_install_has_no_success_output ... ok
+test tests::default_install_output_never_contains_the_token ... ok
+test tests::show_token_is_explicit_and_cannot_be_combined_with_quiet ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/lifecycle_stress.rs (headless/target/debug/deps/lifecycle_stress-edca5fb046f1f289)
+
+running 1 test
+test real_time_lifecycle_and_log_stress ... ignored, real-time stress; run with OFV_STRESS_SECONDS and optional OFV_STRESS_EVIDENCE
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/storage_process.rs (headless/target/debug/deps/storage_process-91d188ce4cd4c335)
+
+running 3 tests
+test process_worker ... ignored, subprocess worker invoked by parent test
+test competing_expected_revisions_never_overwrite_a_successful_commit ... ok
+test four_processes_preserve_all_one_hundred_successful_writes ... ok
+
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 4.45s
+
+    Checking openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+    Checking openfortivpn-manager-http v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-http)
+    Checking openfortivpn-manager-headless v0.1.6 (/Users/doumao/code/github/openfortivpn/headless)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.51s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.09s
+     Running unittests src/main.rs (app/src-tauri/helper/target/debug/deps/openfortivpn_manager_helper-04a34c9f64ed796a)
+
+running 11 tests
+test tests::process_identity_detects_pid_reuse_and_executable_replacement ... ok
+test tests::helper_setup_or_recovery_failure_never_triggers_automatic_engine_retry ... ok
+test tests::control_tokens_require_an_exact_constant_time_match ... ok
+test tests::sudo_may_lead_the_group_while_helper_owns_engine ... ok
+test tests::rejects_duplicate_and_invalid_values ... ok
+test tests::accepts_only_manager_generated_fields ... ok
+test tests::rejects_root_extension_directives ... ok
+test tests::control_mode_accepts_only_canonical_attempt_and_private_pipe ... ok
+test tests::instance_record_round_trip_binds_owner_processes_and_secret ... ok
+test tests::upgrade_refuses_nested_owner_records_and_corrupt_directory_links ... ok
+test tests::helper_observes_cleanup_before_releasing_its_network_authority ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+    Checking openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+    Checking openfortivpn-manager-helper v0.1.5 (/Users/doumao/code/github/openfortivpn/app/src-tauri/helper)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.41s
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+   Compiling openfortivpn-manager-http v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-http)
+   Compiling openfortivpn-manager v0.1.6 (/Users/doumao/code/github/openfortivpn/app/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.79s
+     Running unittests src/lib.rs (app/src-tauri/target/debug/deps/openfortivpn_manager_lib-34266f22be7abf02)
+
+running 51 tests
+test remote::tests::certificate_names_follow_the_configured_bind_address ... ok
+test remote::tests::defaults_are_loopback_only_and_disabled ... ok
+test remote::tests::rejects_hostnames_and_zero_port ... ok
+test remote::tests::bearer_comparison_requires_exact_token ... ok
+test remote::tests::generated_tokens_have_256_bits_of_random_input ... ok
+test tests::auto_reconnect_uses_bounded_exponential_backoff ... ok
+test tests::accepts_a_complete_valid_profile ... ok
+test tests::adapter_name_falls_back_for_non_ascii_profile_name ... ok
+test tests::adapter_name_is_safe_bounded_and_deterministic ... ok
+test tests::adapter_name_distinguishes_reconnections ... ok
+test tests::automatic_retry_excludes_manual_and_fatal_disconnects ... ok
+test tests::automatic_reconnect_reuses_its_cancellation_generation ... ok
+test tests::desktop_preferences_default_to_background_residency ... ok
+test tests::different_profiles_can_reserve_connections_concurrently ... ok
+test tests::desktop_preferences_load_missing_fields_with_safe_defaults ... ok
+test backup::tests::portable_archive_rejects_internal_refs_orphans_and_missing_autoconnect_secrets ... ok
+test tests::engine_event_includes_profile_mapping_for_fast_process_events ... ok
+test tests::engine_state_mapping_preserves_terminal_states ... ok
+test tests::failed_precommit_write_keeps_repository_blocked_and_idle_recovery_preserves_old_ref ... ok
+test authentication::tests::stopped_or_obsolete_desktop_challenge_cannot_write_and_lease_requires_exclusivity ... ok
+test tests::late_events_cannot_revive_stopping_or_terminal_instances ... ok
+test tests::legacy_engine_log_marks_tunnel_as_connected ... ok
+test tests::explicit_missing_credential_is_not_rechecked_on_every_startup ... ok
+test tests::loads_legacy_profiles_with_auto_connect_disabled ... ok
+test tests::privileged_operations_use_the_fixed_system_sudo_binary ... ok
+test tests::legacy_profile_file_marks_credential_state_for_one_time_migration ... ok
+test tests::privilege_status_uses_frontend_field_names ... ok
+test tests::profile_file_persists_credential_metadata_without_the_password ... ok
+test tests::reconnect_generation_is_monotonic_and_serialized ... ok
+test tests::rejects_line_break_injection_in_runtime_password ... ok
+test tests::rejects_missing_required_profile_values ... ok
+test tests::rejects_line_break_injection_in_profile_fields ... ok
+test tests::rejects_profile_id_reserved_for_remote_access_token ... ok
+test tests::rejects_passwords_the_engine_would_silently_change_or_truncate ... ok
+test tests::renders_disabled_flags_and_omits_empty_optional_values ... ok
+test tests::repeated_user_connect_reuses_the_running_instance ... ok
+test tests::renders_runtime_config_with_all_profile_options ... ok
+test tests::startup_is_hidden_only_for_background_autostart ... ok
+test tests::stale_startup_credential_reads_cannot_undo_a_user_change ... ok
+test tests::tray_status_summarizes_connection_lifecycle ... ok
+test tests::malformed_profile_files_never_silently_replace_profiles_or_credentials ... ok
+test tests::tunnel_up_is_the_only_event_that_finishes_connecting ... ok
+test tests::validates_trusted_certificate_sha256_digest ... ok
+test tests::profile_removal_clears_credentials_instances_and_retry_state ... ok
+test tests::retained_logs_are_bounded_filterable_and_chronological ... ok
+test tests::component_hash_detects_payload_changes ... ok
+test tests::local_vpn_credentials_reject_insecure_permissions_and_symlinks ... ok
+test tests::local_vpn_credentials_are_private_and_round_trip ... ok
+test tests::reader_panic_or_io_failure_cannot_be_treated_as_clean_eof ... ok
+test tests::uncertain_metadata_commit_blocks_stale_cache_until_disk_reload ... ok
+test authentication::tests::desktop_otp_uses_owned_pipe_once_and_does_not_change_credentials ... ok
+
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/main.rs (app/src-tauri/target/debug/deps/openfortivpn_manager-bca1de66c4e7bc3e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Checking openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+    Checking openfortivpn-manager-http v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-http)
+    Checking openfortivpn-manager v0.1.6 (/Users/doumao/code/github/openfortivpn/app/src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.55s
+
+> openfortivpn-manager@0.1.6 check /Users/doumao/code/github/openfortivpn/app
+> svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && node ../web/build.mjs --check
+
+Loading svelte-check in workspace: /Users/doumao/code/github/openfortivpn/app
+Getting Svelte diagnostics...
+
+svelte-check found 0 errors and 0 warnings
+
+> openfortivpn-manager@0.1.6 build /Users/doumao/code/github/openfortivpn/app
+> svelte-kit sync && vite build
+
+vite v6.4.4 building SSR bundle for production...
+transforming...
+✓ 180 modules transformed.
+rendering chunks...
+vite v6.4.4 building for production...
+transforming...
+✓ 186 modules transformed.
+rendering chunks...
+computing gzip size...
+.svelte-kit/output/client/_app/version.json                        0.03 kB │ gzip:  0.05 kB
+.svelte-kit/output/client/.vite/manifest.json                      5.11 kB │ gzip:  0.93 kB
+.svelte-kit/output/client/_app/immutable/assets/0.CKoZWBs5.css     3.21 kB │ gzip:  1.31 kB
+.svelte-kit/output/client/_app/immutable/assets/2.61hodjKQ.css    30.89 kB │ gzip:  5.71 kB
+.svelte-kit/output/client/_app/immutable/nodes/2.Bw_arH-l.js       0.07 kB │ gzip:  0.08 kB
+.svelte-kit/output/client/_app/immutable/chunks/CPZzZVDY.js        0.28 kB │ gzip:  0.22 kB
+.svelte-kit/output/client/_app/immutable/chunks/olHf2MKC.js        0.33 kB │ gzip:  0.22 kB
+.svelte-kit/output/client/_app/immutable/nodes/0.DbcU3Vy1.js       0.45 kB │ gzip:  0.33 kB
+.svelte-kit/output/client/_app/immutable/nodes/1.CIVmVY8_.js       0.48 kB │ gzip:  0.32 kB
+.svelte-kit/output/client/_app/immutable/chunks/Bho9xNWE.js        1.33 kB │ gzip:  0.73 kB
+.svelte-kit/output/client/_app/immutable/chunks/wbPk3Yxo.js        1.37 kB │ gzip:  0.66 kB
+.svelte-kit/output/client/_app/immutable/chunks/aV4M2YWD.js        2.24 kB │ gzip:  0.99 kB
+.svelte-kit/output/client/_app/immutable/chunks/BV9JAZFB.js        3.00 kB │ gzip:  1.62 kB
+.svelte-kit/output/client/_app/immutable/chunks/BFs0A4aJ.js        3.33 kB │ gzip:  1.13 kB
+.svelte-kit/output/client/_app/immutable/entry/app.CHAXeuAl.js     5.13 kB │ gzip:  2.32 kB
+.svelte-kit/output/client/_app/immutable/chunks/JsEUuZDc.js        6.90 kB │ gzip:  3.13 kB
+.svelte-kit/output/client/_app/immutable/chunks/BQ8nxHqr.js        9.04 kB │ gzip:  3.76 kB
+.svelte-kit/output/client/_app/immutable/chunks/egy0CeHT.js       14.38 kB │ gzip:  3.57 kB
+.svelte-kit/output/client/_app/immutable/entry/start.C1GWfuFm.js  22.89 kB │ gzip:  8.86 kB
+.svelte-kit/output/client/_app/immutable/chunks/C9RQ3bUw.js       28.23 kB │ gzip: 10.76 kB
+.svelte-kit/output/client/_app/immutable/chunks/3Ao91RiA.js       74.33 kB │ gzip: 26.56 kB
+✓ built in 1.62s
+.svelte-kit/output/server/.vite/manifest.json                           3.85 kB
+.svelte-kit/output/server/_app/immutable/assets/_layout.CKoZWBs5.css    3.21 kB
+.svelte-kit/output/server/_app/immutable/assets/_page.DqntxYWK.css     26.03 kB
+.svelte-kit/output/server/entries/pages/_layout.ts.js                   0.04 kB
+.svelte-kit/output/server/entries/pages/_layout.svelte.js               0.16 kB
+.svelte-kit/output/server/env.js                                        0.23 kB
+.svelte-kit/output/server/internal.js                                   0.35 kB
+.svelte-kit/output/server/chunks/server.js                              0.62 kB
+.svelte-kit/output/server/entries/fallbacks/error.svelte.js             1.01 kB
+.svelte-kit/output/server/chunks/utils2.js                              1.09 kB
+.svelte-kit/output/server/chunks/internal.js                            3.38 kB
+.svelte-kit/output/server/chunks/exports.js                             5.54 kB
+.svelte-kit/output/server/entries/pages/_page.svelte.js                18.15 kB
+.svelte-kit/output/server/chunks/uneval.js                             19.91 kB
+.svelte-kit/output/server/remote-entry.js                              36.79 kB
+.svelte-kit/output/server/chunks/index.js                              44.16 kB
+.svelte-kit/output/server/chunks/utils.js                              60.06 kB
+.svelte-kit/output/server/chunks/root.js                               90.50 kB
+.svelte-kit/output/server/index.js                                    137.39 kB
+✓ built in 6.50s
+
+Run npm run preview to preview your production build locally.
+
+> Using @sveltejs/adapter-static
+  Wrote site to "build"
+  ✔ done
+TAP version 13
+# Subtest: a reconnect under the same intent replaces its old attempt even within one clock second
+ok 1 - a reconnect under the same intent replaces its old attempt even within one clock second
+  ---
+  duration_ms: 2.047084
+  type: 'test'
+  ...
+# Subtest: older profile replies never overwrite a newer revision and log retention is deterministic
+ok 2 - older profile replies never overwrite a newer revision and log retention is deterministic
+  ---
+  duration_ms: 1.179967
+  type: 'test'
+  ...
+# Subtest: an event subscription resolving after unmount is removed and cannot update the disposed page
+ok 3 - an event subscription resolving after unmount is removed and cannot update the disposed page
+  ---
+  duration_ms: 0.550242
+  type: 'test'
+  ...
+# Subtest: structured IPC failures show their message without exposing arbitrary response fields
+ok 4 - structured IPC failures show their message without exposing arbitrary response fields
+  ---
+  duration_ms: 0.199572
+  type: 'test'
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 4
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 553.095807
+TAP version 13
+# Subtest: OTP input survives polling but clears on attempt changes, closure and logout
+ok 1 - OTP input survives polling but clears on attempt changes, closure and logout
+  ---
+  duration_ms: 27.573119
+  type: 'test'
+  ...
+# Subtest: 401 rejects login and keeps the console hidden
+ok 2 - 401 rejects login and keeps the console hidden
+  ---
+  duration_ms: 1.5889
+  type: 'test'
+  ...
+# Subtest: v1 and v2 error envelopes preserve the actual message
+ok 3 - v1 and v2 error envelopes preserve the actual message
+  ---
+  duration_ms: 1.663015
+  type: 'test'
+  ...
+# Subtest: failed refresh rejects and exposes offline state
+ok 4 - failed refresh rejects and exposes offline state
+  ---
+  duration_ms: 0.814955
+  type: 'test'
+  ...
+# Subtest: a response from a previous session cannot restore the console
+ok 5 - a response from a previous session cannot restore the console
+  ---
+  duration_ms: 1.007692
+  type: 'test'
+  ...
+# Subtest: successful authorization alone opens the console
+ok 6 - successful authorization alone opens the console
+  ---
+  duration_ms: 0.992176
+  type: 'test'
+  ...
+# Subtest: logout during JSON decoding rejects a previously authorized response
+ok 7 - logout during JSON decoding rejects a previously authorized response
+  ---
+  duration_ms: 1.133872
+  type: 'test'
+  ...
+1..7
+# tests 7
+# suites 0
+# pass 7
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 232.622165
+TAP version 13
+# Subtest: a candidate contains every platform and hashes the verified artifacts
+ok 1 - a candidate contains every platform and hashes the verified artifacts
+  ---
+  duration_ms: 11.381564
+  type: 'test'
+  ...
+# Subtest: official publication requires real functional evidence in addition to signing
+ok 2 - official publication requires real functional evidence in addition to signing
+  ---
+  duration_ms: 11.082935
+  type: 'test'
+  ...
+# Subtest: duplicate names, missing platforms and source mismatch fail closed
+ok 3 - duplicate names, missing platforms and source mismatch fail closed
+  ---
+  duration_ms: 8.818226
+  type: 'test'
+  ...
+1..3
+# tests 3
+# suites 0
+# pass 3
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 270.99198
+TAP version 13
+# Subtest: all installed versions are scanned, including nested and development packages
+ok 1 - all installed versions are scanned, including nested and development packages
+  ---
+  duration_ms: 5.747455
+  type: 'test'
+  ...
+# Subtest: high advisories block and invalid registry responses cannot count as clean scans
+ok 2 - high advisories block and invalid registry responses cannot count as clean scans
+  ---
+  duration_ms: 0.930364
+  type: 'test'
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 2
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 236.646569
+-- The C compiler identification is AppleClang 17.0.0.17000404
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Found OpenSSL: /usr/local/Cellar/openssl@3/3.6.2/lib/libcrypto.dylib (found version "3.6.2")
+-- Looking for forkpty in util
+-- Looking for forkpty in util - found
+-- Looking for pty.h
+-- Looking for pty.h - not found
+-- Looking for util.h
+-- Looking for util.h - found
+-- Looking for libutil.h
+-- Looking for libutil.h - not found
+-- Looking for mach/mach.h
+-- Looking for mach/mach.h - found
+-- Looking for semaphore.h
+-- Looking for semaphore.h - found
+-- Looking for termios.h
+-- Looking for termios.h - found
+-- Performing Test HAVE_RT_ENTRY_WITH_RT_DST
+-- Performing Test HAVE_RT_ENTRY_WITH_RT_DST - Failed
+-- Performing Test HAVE_SO_BINDTODEVICE
+-- Performing Test HAVE_SO_BINDTODEVICE - Success
+-- Looking for vdprintf
+-- Looking for vdprintf - found
+-- Configuring done (17.7s)
+-- Generating done (0.1s)
+-- Build files have been written to: /var/folders/g2/5_js3rq10mbdzbp6dqtxd9d40000gn/T/openfortivpn-verify-cmake
+[  2%] Building C object CMakeFiles/openfortivpn.dir/src/main.c.o
+[  5%] Building C object CMakeFiles/test_ppp.dir/tests/test_ppp.c.o
+[  8%] Building C object CMakeFiles/test_url_encoding.dir/tests/test_url_encoding.c.o
+[ 11%] Building C object CMakeFiles/test_tls_policy.dir/tests/test_tls_policy.c.o
+[ 14%] Linking C executable test_url_encoding
+[ 17%] Building C object CMakeFiles/test_ppp.dir/src/ppp.c.o
+[ 20%] Building C object CMakeFiles/openfortivpn.dir/src/tls_policy.c.o
+[ 23%] Building C object CMakeFiles/test_tls_policy.dir/src/tls_policy.c.o
+[ 26%] Building C object CMakeFiles/test_ppp.dir/src/hdlc.c.o
+[ 26%] Built target test_url_encoding
+[ 29%] Linking C executable test_tls_policy
+[ 32%] Building C object CMakeFiles/openfortivpn.dir/src/config.c.o
+[ 35%] Building C object CMakeFiles/openfortivpn.dir/src/event.c.o
+[ 38%] Linking C executable test_ppp
+[ 38%] Built target test_tls_policy
+[ 41%] Building C object CMakeFiles/openfortivpn.dir/src/manager_control.c.o
+[ 41%] Built target test_ppp
+[ 44%] Building C object CMakeFiles/openfortivpn.dir/src/hdlc.c.o
+[ 47%] Building C object CMakeFiles/test_manager_control.dir/tests/test_manager_control.c.o
+[ 50%] Building C object CMakeFiles/test_manager_control.dir/src/manager_control.c.o
+[ 52%] Building C object CMakeFiles/test_manager_control.dir/src/event.c.o
+[ 55%] Building C object CMakeFiles/openfortivpn.dir/src/http.c.o
+[ 58%] Linking C executable test_manager_control
+[ 61%] Building C object CMakeFiles/openfortivpn.dir/src/xml.c.o
+[ 64%] Building C object CMakeFiles/test_dns_policy.dir/tests/test_dns_policy.c.o
+[ 67%] Building C object CMakeFiles/test_saml_policy.dir/tests/test_saml_policy.c.o
+[ 67%] Built target test_manager_control
+[ 70%] Building C object CMakeFiles/openfortivpn.dir/src/io.c.o
+[ 73%] Linking C executable test_dns_policy
+[ 76%] Building C object CMakeFiles/openfortivpn.dir/src/tunnel.c.o
+[ 79%] Linking C executable test_saml_policy
+[ 79%] Built target test_dns_policy
+[ 79%] Built target test_saml_policy
+[ 82%] Building C object CMakeFiles/openfortivpn.dir/src/ipv4.c.o
+[ 85%] Building C object CMakeFiles/openfortivpn.dir/src/userinput.c.o
+[ 88%] Building C object CMakeFiles/openfortivpn.dir/src/log.c.o
+[ 91%] Building C object CMakeFiles/test_thread_group.dir/tests/test_thread_group.c.o
+[ 94%] Building C object CMakeFiles/openfortivpn.dir/src/http_server.c.o
+[ 97%] Linking C executable test_thread_group
+[100%] Linking C executable openfortivpn
+[100%] Built target test_thread_group
+[100%] Built target openfortivpn
+Internal ctest changing into directory: /var/folders/g2/5_js3rq10mbdzbp6dqtxd9d40000gn/T/openfortivpn-verify-cmake
+Test project /private/var/folders/g2/5_js3rq10mbdzbp6dqtxd9d40000gn/T/openfortivpn-verify-cmake
+    Start 1: ppp_state_machine
+1/9 Test #1: ppp_state_machine ................   Passed    0.05 sec
+    Start 2: url_encoding
+2/9 Test #2: url_encoding .....................   Passed    0.04 sec
+    Start 3: tls_certificate_policy
+3/9 Test #3: tls_certificate_policy ...........   Passed    0.11 sec
+    Start 4: engine_capabilities
+4/9 Test #4: engine_capabilities ..............   Passed    0.06 sec
+    Start 5: manager_private_control
+5/9 Test #5: manager_private_control ..........   Passed    0.07 sec
+    Start 6: manager_private_control_pipe
+6/9 Test #6: manager_private_control_pipe .....   Passed    0.45 sec
+    Start 7: dns_existing_entries
+7/9 Test #7: dns_existing_entries .............   Passed    0.04 sec
+    Start 8: saml_callback_policy
+8/9 Test #8: saml_callback_policy .............   Passed    0.04 sec
+    Start 9: partial_worker_startup
+9/9 Test #9: partial_worker_startup ...........   Passed    0.07 sec
+
+100% tests passed, 0 tests failed out of 9
+
+Total Test time (real) =   0.93 sec

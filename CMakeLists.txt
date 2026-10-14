@@ -13,8 +13,10 @@ find_package(OpenSSL REQUIRED)
 
 # Common sources (platform-independent)
 set(COMMON_SOURCES
+    src/tls_policy.c
     src/config.c
     src/event.c
+    src/manager_control.c
     src/hdlc.c
     src/http.c
     src/xml.c
@@ -283,6 +285,35 @@ if(BUILD_TESTING)
     )
     target_include_directories(test_url_encoding PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME url_encoding COMMAND test_url_encoding)
+
+    add_executable(test_tls_policy tests/test_tls_policy.c src/tls_policy.c)
+    target_include_directories(test_tls_policy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(test_tls_policy OpenSSL::SSL OpenSSL::Crypto)
+    add_test(NAME tls_certificate_policy COMMAND test_tls_policy)
+    add_test(NAME engine_capabilities COMMAND openfortivpn --capabilities-json)
+    add_executable(test_manager_control tests/test_manager_control.c src/manager_control.c src/event.c)
+    target_include_directories(test_manager_control PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    get_target_property(ENGINE_DEFINITIONS openfortivpn COMPILE_DEFINITIONS)
+    target_compile_definitions(test_manager_control PRIVATE ${ENGINE_DEFINITIONS})
+    target_link_libraries(test_manager_control OpenSSL::SSL OpenSSL::Crypto ${PLATFORM_LIBS})
+    add_test(NAME manager_private_control COMMAND test_manager_control)
+    find_program(NODE_TEST_RUNTIME node)
+    if(NODE_TEST_RUNTIME)
+        add_test(NAME manager_private_control_pipe COMMAND ${NODE_TEST_RUNTIME} ${CMAKE_SOURCE_DIR}/tests/manager-control-pipe.mjs $<TARGET_FILE:test_manager_control> $<TARGET_FILE:openfortivpn>)
+    endif()
+    set_tests_properties(engine_capabilities PROPERTIES PASS_REGULAR_EXPRESSION "protocolVersion.*2")
+    add_executable(test_dns_policy tests/test_dns_policy.c)
+    target_include_directories(test_dns_policy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME dns_existing_entries COMMAND test_dns_policy)
+    add_executable(test_saml_policy tests/test_saml_policy.c)
+    target_include_directories(test_saml_policy PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME saml_callback_policy COMMAND test_saml_policy)
+    if(NOT WIN32)
+        add_executable(test_thread_group tests/test_thread_group.c)
+        target_include_directories(test_thread_group PRIVATE ${CMAKE_SOURCE_DIR}/src)
+        target_link_libraries(test_thread_group pthread)
+        add_test(NAME partial_worker_startup COMMAND test_thread_group)
+    endif()
 endif()
 
 # Install target

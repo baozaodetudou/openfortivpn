@@ -1,0 +1,10 @@
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.06s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-f65dd3a45042ade9)
+
+running 2 tests
+test network_control::tests::only_a_complete_bound_ordered_plan_can_reach_the_privileged_worker ... ok
+test network_control::tests::malformed_cross_attempt_and_unsafe_transport_plans_are_rejected ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 98 filtered out; finished in 0.00s
+

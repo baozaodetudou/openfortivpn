@@ -1,0 +1,46 @@
+{
+  "hostNetworkModified": false,
+  "windowsRuntimeAcceptance": false,
+  "checks": [
+    {
+      "command": "cargo clippy --manifest-path crates/manager-core/Cargo.toml --target x86_64-pc-windows-msvc --all-targets -- -D warnings",
+      "exitCode": 0,
+      "observedToolSession": 31653
+    },
+    {
+      "command": "cargo clippy --manifest-path crates/manager-core/Cargo.toml --all-targets -- -D warnings",
+      "exitCode": 0,
+      "observedToolSession": 39218
+    },
+    {
+      "command": "cargo test --manifest-path crates/manager-core/Cargo.toml supervisor",
+      "exitCode": 0,
+      "testsPassed": 7,
+      "observedToolSession": 62464
+    },
+    {
+      "command": "cargo test --manifest-path crates/manager-core/Cargo.toml network_windows_dns_policy",
+      "exitCode": 0,
+      "testsPassed": 4,
+      "observedToolSession": 85112
+    },
+    {
+      "command": "PowerShell Language.Parser.ParseFile src/network_windows_dns.ps1",
+      "exitCode": 0,
+      "toolVersion": "7.6.6",
+      "observedToolSession": 76283
+    },
+    {
+      "command": "python3 crates/manager-core/tests/windows_nrpt_script.py --powershell build/powershell-tool/pwsh",
+      "exitCode": 0,
+      "type": "mock DnsClient module with real PowerShell process",
+      "toolVersion": "7.6.6",
+      "observedToolSession": 21730
+    }
+  ],
+  "notRun": [
+    "ignored elevated Windows machine-authority runtime tests",
+    "real Windows DNS/NRPT policy tests",
+    "cross-admin and reparse platform acceptance"
+  ]
+}

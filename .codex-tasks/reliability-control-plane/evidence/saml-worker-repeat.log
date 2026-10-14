@@ -1,0 +1,100 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-70e5e0f501493d17)
+
+running 3 tests
+test saml_broker::tests::parser_rejects_duplicate_host_headers_bodies_and_partial_requests ... ok
+test saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session ... ok
+test saml_broker::tests::cancellation_and_expiry_close_the_listener_without_a_response ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.02s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-70e5e0f501493d17)
+
+running 3 tests
+test saml_broker::tests::parser_rejects_duplicate_host_headers_bodies_and_partial_requests ... ok
+test saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session ... ok
+test saml_broker::tests::cancellation_and_expiry_close_the_listener_without_a_response ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.02s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-70e5e0f501493d17)
+
+running 3 tests
+test saml_broker::tests::parser_rejects_duplicate_host_headers_bodies_and_partial_requests ... ok
+test saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session ... ok
+test saml_broker::tests::cancellation_and_expiry_close_the_listener_without_a_response ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.02s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-70e5e0f501493d17)
+
+running 3 tests
+test saml_broker::tests::parser_rejects_duplicate_host_headers_bodies_and_partial_requests ... ok
+test saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session ... ok
+test saml_broker::tests::cancellation_and_expiry_close_the_listener_without_a_response ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.02s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-70e5e0f501493d17)
+
+running 3 tests
+test saml_broker::tests::parser_rejects_duplicate_host_headers_bodies_and_partial_requests ... ok
+test saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session ... ok
+test saml_broker::tests::cancellation_and_expiry_close_the_listener_without_a_response ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.02s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.24s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-70e5e0f501493d17)
+
+running 3 tests
+test saml_broker::tests::parser_rejects_duplicate_host_headers_bodies_and_partial_requests ... ok
+test saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session ... ok
+test saml_broker::tests::cancellation_and_expiry_close_the_listener_without_a_response ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.02s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-70e5e0f501493d17)
+
+running 3 tests
+test saml_broker::tests::parser_rejects_duplicate_host_headers_bodies_and_partial_requests ... ok
+test saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session ... ok
+test saml_broker::tests::cancellation_and_expiry_close_the_listener_without_a_response ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.02s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-70e5e0f501493d17)
+
+running 3 tests
+test saml_broker::tests::parser_rejects_duplicate_host_headers_bodies_and_partial_requests ... ok
+test saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session ... ok
+test saml_broker::tests::cancellation_and_expiry_close_the_listener_without_a_response ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.02s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-70e5e0f501493d17)
+
+running 3 tests
+test saml_broker::tests::parser_rejects_duplicate_host_headers_bodies_and_partial_requests ... ok
+test saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session ... ok
+test saml_broker::tests::cancellation_and_expiry_close_the_listener_without_a_response ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.02s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-70e5e0f501493d17)
+
+running 3 tests
+test saml_broker::tests::parser_rejects_duplicate_host_headers_bodies_and_partial_requests ... ok
+test saml_broker::tests::real_loopback_listener_rejects_foreign_paths_and_accepts_one_bound_session ... ok
+test saml_broker::tests::cancellation_and_expiry_close_the_listener_without_a_response ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 69 filtered out; finished in 0.02s
+

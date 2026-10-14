@@ -1,0 +1,19 @@
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.06s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-f65dd3a45042ade9)
+
+running 1 test
+
+thread 'network_authority::tests::native_journal_blocks_release_and_acknowledgement_before_destructive_callback' (429650) panicked at crates/manager-core/src/network_authority.rs:305:9:
+assertion failed: lease.finish(true, true).is_err()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test network_authority::tests::native_journal_blocks_release_and_acknowledgement_before_destructive_callback ... FAILED
+
+failures:
+
+failures:
+    network_authority::tests::native_journal_blocks_release_and_acknowledgement_before_destructive_callback
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 117 filtered out; finished in 0.07s
+
+error: test failed, to rerun pass `-p openfortivpn-manager-core --lib`

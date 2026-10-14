@@ -1,0 +1,17 @@
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.21s
+     Running unittests src/lib.rs (target/debug/deps/openfortivpn_manager_core-f65dd3a45042ade9)
+
+running 9 tests
+test network_authority::tests::older_records_never_gain_pre_spawn_gate_proof_during_migration ... ok
+test network_authority::tests::invalid_records_and_symlinks_fail_closed_before_recovery_callback ... ok
+test network_authority::tests::unfinished_native_worker_blocks_acknowledgement_without_waiting_or_deleting ... ok
+test network_authority::tests::malformed_native_journal_never_becomes_cleanup_proof ... ok
+test network_authority::tests::native_journal_blocks_release_and_acknowledgement_before_destructive_callback ... ok
+test network_authority::tests::installer_and_process_binding_cannot_bypass_the_active_owner ... ok
+test network_authority::tests::crashed_worker_or_failed_cleanup_keeps_the_durable_reservation ... ok
+test network_authority::tests::every_manager_is_excluded_until_reap_and_cleanup_are_confirmed ... ok
+test network_authority::tests::orphan_native_journal_and_binding_block_new_engines_and_maintenance ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 115 filtered out; finished in 0.23s
+

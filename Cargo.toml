@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/manager-core", "crates/manager-http"]
+default-members = ["crates/manager-core", "crates/manager-http"]
+# Keep the existing application/helper locks and packaged payload boundaries
+# during migration. Headless never resolves Tauri/WebView through this workspace.
+exclude = ["headless", "app/src-tauri", "app/src-tauri/helper"]

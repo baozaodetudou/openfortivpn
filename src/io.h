@@ -25,6 +25,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 /*
  * For performance reasons, we store the 6-byte header used by the TLS
@@ -53,8 +54,42 @@ struct ppp_packet_pool {
 		(pool)->list_head = NULL; \
 	} while (0)
 
-#define destroy_ppp_packet_pool(pool) \
-	pthread_mutex_destroy(&(pool)->mutex)
+/* Call only after every producer/consumer has joined. */
+static inline void destroy_ppp_packet_pool(struct ppp_packet_pool *pool)
+{
+	while (pool->list_head) {
+		struct ppp_packet *packet = pool->list_head;
+
+		pool->list_head = packet->next;
+		free(packet);
+	}
+	pthread_cond_destroy(&pool->new_data);
+	pthread_mutex_destroy(&pool->mutex);
+}
+
+#ifndef _WIN32
+static inline void ofv_pool_unlock(void *mutex)
+{
+	pthread_mutex_unlock((pthread_mutex_t *)mutex);
+}
+
+static inline struct ppp_packet *ofv_pool_pop(struct ppp_packet_pool
+                *pool)
+{
+	struct ppp_packet *first;
+
+	pthread_mutex_lock(&pool->mutex);
+	/* cond_wait reacquires the mutex before cancellation cleanup runs. */
+	pthread_cleanup_push(ofv_pool_unlock, &pool->mutex);
+	while (pool->list_head == NULL)
+		pthread_cond_wait(&pool->new_data, &pool->mutex);
+	first = pool->list_head;
+	pool->list_head = first->next;
+	first->next = NULL;
+	pthread_cleanup_pop(1);
+	return first;
+}
+#endif
 
 struct tunnel;
 

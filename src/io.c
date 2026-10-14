@@ -31,6 +31,7 @@
 #include "ssl.h"
 #include "tunnel.h"
 #include "log.h"
+#include "thread_group.h"
 
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -73,7 +74,8 @@ typedef sem_t os_semaphore_t;
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 static pthread_mutex_t *lockarray;
 
-static void lock_callback(int mode, int type, const char *file, int line)
+static void lock_callback(int mode, int type, const char *file,
+                          int line)
 {
 	if (mode & CRYPTO_LOCK)
 		pthread_mutex_lock(&lockarray[type]);
@@ -115,7 +117,8 @@ static void destroy_ssl_locks(void)
 #endif
 
 // global variable to pass signal out of its handler
-volatile sig_atomic_t sig_received; //static variables are initialized to zero in C99
+volatile sig_atomic_t
+sig_received; //static variables are initialized to zero in C99
 
 int get_sig_received(void)
 {
@@ -133,7 +136,8 @@ int get_sig_received(void)
  * your perspective! You don't know when it will be really released by the
  * thread which pool_pop it in parallel.
  */
-static void pool_push(struct ppp_packet_pool *pool, struct ppp_packet *new)
+static void pool_push(struct ppp_packet_pool *pool,
+                      struct ppp_packet *new)
 {
 	struct ppp_packet *current;
 
@@ -158,20 +162,7 @@ static void pool_push(struct ppp_packet_pool *pool, struct ppp_packet *new)
  */
 static struct ppp_packet *pool_pop(struct ppp_packet_pool *pool)
 {
-	struct ppp_packet *first;
-
-	pthread_mutex_lock(&pool->mutex);
-
-	while (pool->list_head == NULL)
-		pthread_cond_wait(&pool->new_data, &pool->mutex);
-
-	first = pool->list_head;
-	pool->list_head = first->next;
-	first->next = NULL;
-
-	pthread_mutex_unlock(&pool->mutex);
-
-	return first;
+	return ofv_pool_pop(pool);
 }
 
 static os_semaphore_t sem_pppd_ready;
@@ -411,7 +402,8 @@ static void debug_bad_packet(struct tunnel *tunnel, uint8_t *header)
 
 	memcpy(buffer, header, 6 * sizeof(uint8_t));
 
-	size = safe_ssl_read(tunnel->ssl_handle, &buffer[6], sizeof(buffer) - 6);
+	size = safe_ssl_read(tunnel->ssl_handle, &buffer[6],
+	                     sizeof(buffer) - 6);
 	if (size < 0)
 		return;
 	assert(size <= INT_MAX - 6);
@@ -497,7 +489,9 @@ static void *ssl_read(void *arg)
 
 		if (tunnel->state == STATE_CONNECTING) {
 			if (packet_is_ip_plus_dns(packet)) {
-				char line[ARRAY_SIZE("[xxx.xxx.xxx.xxx], ns [xxx.xxx.xxx.xxx, xxx.xxx.xxx.xxx], ns_suffix []") + MAX_DOMAIN_LENGTH];
+				char line[ARRAY_SIZE(
+				                  "[xxx.xxx.xxx.xxx], ns [xxx.xxx.xxx.xxx, xxx.xxx.xxx.xxx], ns_suffix []"
+				          ) + MAX_DOMAIN_LENGTH];
 
 				set_tunnel_ips(tunnel, packet);
 				strcpy(line, "[");
@@ -604,6 +598,7 @@ static void *if_config(void *arg)
 
 	return NULL;
 error:
+	tunnel->network_apply_failed = 1;
 	// Send message to main thread to stop other threads
 	SEM_POST(&sem_stop_io);
 	return NULL;
@@ -622,11 +617,15 @@ int io_loop(struct tunnel *tunnel)
 	int ret = 0;		// keep track of pthread_* return value
 	int fatal = 0;		// indicate a fatal error during pthread_* calls
 
-	pthread_t pty_read_thread;
-	pthread_t pty_write_thread;
-	pthread_t ssl_read_thread;
-	pthread_t ssl_write_thread;
-	pthread_t if_config_thread;
+	struct ofv_thread_group workers = {0};
+
+	void *(*entries[])(void *) = {
+		pppd_read, pppd_write, ssl_read, ssl_write, if_config
+	};
+#if !HAVE_MACH_MACH_H
+	sigset_t sigset, oldset;
+	int mask_changed = 0;
+#endif
 
 	SEM_INIT(&sem_pppd_ready, 0, 0);
 	SEM_INIT(&sem_if_config, 0, 0);
@@ -659,12 +658,12 @@ int io_loop(struct tunnel *tunnel)
 // on osx this prevents the program from being stopped with ctrl-c
 #if !HAVE_MACH_MACH_H
 	// Disable SIGINT and SIGTERM for the future spawned threads
-	sigset_t sigset, oldset;
-
 	sigemptyset(&sigset);
 	sigaddset(&sigset, SIGINT);
 	sigaddset(&sigset, SIGTERM);
-	pthread_sigmask(SIG_BLOCK, &sigset, &oldset);
+	if (pthread_sigmask(SIG_BLOCK, &sigset, &oldset))
+		goto err_signal;
+	mask_changed = 1;
 #endif
 
 	// Set signal handler
@@ -677,97 +676,31 @@ int io_loop(struct tunnel *tunnel)
 		goto err_signal;
 
 	// create all workers, stop on first error and bail out
-	ret = pthread_create(&pty_read_thread, NULL, pppd_read, tunnel);
-	if (ret != 0) {
-		log_debug("Error creating pty_read_thread: %s\n", strerror(ret));
-		goto err_thread;
-	}
-
-	ret = pthread_create(&pty_write_thread, NULL, pppd_write, tunnel);
-	if (ret != 0) {
-		log_debug("Error creating pty_write_thread: %s\n", strerror(ret));
-		goto err_thread;
-	}
-
-	ret = pthread_create(&ssl_read_thread, NULL, ssl_read, tunnel);
-	if (ret != 0) {
-		log_debug("Error creating ssl_read_thread: %s\n", strerror(ret));
-		goto err_thread;
-	}
-
-	ret = pthread_create(&ssl_write_thread, NULL, ssl_write, tunnel);
-	if (ret != 0) {
-		log_debug("Error creating ssl_write_thread: %s\n", strerror(ret));
-		goto err_thread;
-	}
-
-	ret = pthread_create(&if_config_thread, NULL, if_config, tunnel);
-	if (ret != 0) {
-		log_debug("Error creating if_config_thread: %s\n", strerror(ret));
-		goto err_thread;
+	for (size_t i = 0; i < 5; i++) {
+		ret = ofv_thread_start(&workers, entries[i], tunnel, pthread_create);
+		if (ret) {
+			log_error("Error creating I/O worker: %s\n", strerror(ret));
+			goto err_thread;
+		}
 	}
 
 #if !HAVE_MACH_MACH_H
 	// Restore the signal for the main thread
 	pthread_sigmask(SIG_SETMASK, &oldset, NULL);
+	mask_changed = 0;
 #endif
 
 	// Wait for one of the thread to ask termination
 	SEM_WAIT(&sem_stop_io);
 
-	log_info("Cancelling threads...\n");
-	// no goto err_thread here, try to cancel all threads
-	ret = pthread_cancel(if_config_thread);
-	if (ret != 0)
-		log_debug("Error canceling if_config_thread: %s\n", strerror(ret));
-
-	ret = pthread_cancel(ssl_write_thread);
-	if (ret != 0)
-		log_debug("Error canceling ssl_write_thread: %s\n", strerror(ret));
-
-	ret = pthread_cancel(ssl_read_thread);
-	if (ret != 0)
-		log_debug("Error canceling safe_ssl_read_thread: %s\n", strerror(ret));
-
-	ret = pthread_cancel(pty_write_thread);
-	if (ret != 0)
-		log_debug("Error canceling pty_write_thread: %s\n", strerror(ret));
-
-	ret = pthread_cancel(pty_read_thread);
-	if (ret != 0)
-		log_debug("Error canceling pty_read_thread: %s\n", strerror(ret));
-
-	log_info("Cleanup, joining threads...\n");
-	// failure to clean is a possible zombie thread, consider it fatal
-	ret = pthread_join(if_config_thread, NULL);
-	if (ret != 0) {
-		log_debug("Error joining if_config_thread: %s\n", strerror(ret));
+stop_workers:
+#if !HAVE_MACH_MACH_H
+	if (mask_changed)
+		pthread_sigmask(SIG_SETMASK, &oldset, NULL);
+#endif
+	log_info("Stopping and joining I/O workers...\n");
+	if (ofv_thread_join(&workers, 1))
 		fatal = 1;
-	}
-
-	ret = pthread_join(ssl_write_thread, NULL);
-	if (ret != 0) {
-		log_debug("Error joining ssl_write_thread: %s\n", strerror(ret));
-		fatal = 1;
-	}
-
-	ret = pthread_join(ssl_read_thread, NULL);
-	if (ret != 0) {
-		log_debug("Error joining ssl_read_thread: %s\n", strerror(ret));
-		fatal = 1;
-	}
-
-	ret = pthread_join(pty_write_thread, NULL);
-	if (ret != 0) {
-		log_debug("Error joining pty_write_thread: %s\n", strerror(ret));
-		fatal = 1;
-	}
-
-	ret = pthread_join(pty_read_thread, NULL);
-	if (ret != 0) {
-		log_debug("Error joining pty_read_thread: %s\n", strerror(ret));
-		fatal = 1;
-	}
 
 	destroy_ssl_locks();
 
@@ -778,14 +711,11 @@ int io_loop(struct tunnel *tunnel)
 	SEM_DESTROY(&sem_if_config);
 	SEM_DESTROY(&sem_pppd_ready);
 
-	// should we have detected a fatal error
-	if (fatal)
-		goto err_thread;
-
-	return 0;
+	return fatal;
 
 err_thread:
 err_signal:
 err_sockopt:
-	return 1;
+	fatal = 1;
+	goto stop_workers;
 }

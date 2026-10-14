@@ -4,11 +4,27 @@ on:
   push:
     paths:
       - 'headless/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'web/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'scripts/**'
       - 'app/src-tauri/src/remote.html'
       - '.github/workflows/headless.yml'
   pull_request:
     paths:
       - 'headless/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - 'web/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'scripts/**'
       - 'app/src-tauri/src/remote.html'
       - '.github/workflows/headless.yml'
   workflow_dispatch:
@@ -41,11 +57,33 @@ jobs:
         with:
           workspaces: headless -> target
 
+      - name: Shared core and remote client contracts
+        run: |
+          cargo test --locked --workspace --all-features
+          node --test tests/remote-client.test.mjs
+
+      - name: Native route and D-Bus transaction tests in isolated namespace
+        run: sh scripts/verify-linux-network.sh
+
       - name: Format, lint and test
         run: |
           cargo fmt --manifest-path headless/Cargo.toml --all -- --check
           cargo clippy --locked --manifest-path headless/Cargo.toml --all-targets -- -D warnings
           cargo test --locked --manifest-path headless/Cargo.toml --all-targets
+
+      - name: Five-minute fake-engine lifecycle and log stress
+        env:
+          OFV_STRESS_SECONDS: '300'
+          OFV_STRESS_EVIDENCE: ${{ runner.temp }}/lifecycle-stress.json
+        run: cargo test --locked --manifest-path headless/Cargo.toml --test lifecycle_stress -- --ignored --nocapture
+
+      - name: Preserve synthetic stress evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-lifecycle-stress
+          path: ${{ runner.temp }}/lifecycle-stress.json
+          if-no-files-found: ignore
 
   package:
     name: Build and inspect Linux packages
@@ -91,11 +129,15 @@ jobs:
           sh -n headless/scripts/install-bundle.sh
           sh -n headless/packaging/debian/postinst
           sh -n headless/packaging/debian/prerm
+          sh -n scripts/verify-headless-package.sh
+          sh -n scripts/package-headless.sh
           shellcheck \
             headless/scripts/install.sh \
             headless/scripts/install-bundle.sh \
             headless/packaging/debian/postinst \
-            headless/packaging/debian/prerm
+            headless/packaging/debian/prerm \
+            scripts/verify-headless-package.sh \
+            scripts/package-headless.sh
 
       - name: Build headless manager and VPN engine
         run: |
@@ -112,41 +154,10 @@ jobs:
         env:
           PACKAGE_VERSION: ${{ steps.package.outputs.version }}
         run: |
-          set -euo pipefail
-          artifact_dir="$GITHUB_WORKSPACE/headless-dist"
-          archive_root="$artifact_dir/openfortivpn-manager-headless-linux-x86_64"
-          deb_root="$RUNNER_TEMP/openfortivpn-manager-headless_${PACKAGE_VERSION}_amd64"
-
-          mkdir -p "$archive_root/bin" "$archive_root/libexec" "$archive_root/examples"
-          install -m 0755 headless/target/release/openfortivpn-manager-headless \
-            "$archive_root/bin/openfortivpn-manager-headless"
-          install -m 0755 build/headless-ci/openfortivpn \
-            "$archive_root/libexec/openfortivpn"
-          install -m 0755 headless/scripts/install-bundle.sh "$archive_root/install.sh"
-          install -m 0644 headless/README.md "$archive_root/README.md"
-          cp -a headless/examples/. "$archive_root/examples/"
-          tar -C "$artifact_dir" -czf \
-            "$artifact_dir/openfortivpn-manager-headless_${PACKAGE_VERSION}_linux_x86_64.tar.gz" \
-            "$(basename "$archive_root")"
-
-          mkdir -p "$deb_root/DEBIAN" \
-            "$deb_root/usr/local/sbin" \
-            "$deb_root/usr/local/libexec/openfortivpn-manager-headless" \
-            "$deb_root/usr/share/doc/openfortivpn-manager-headless/examples"
-          sed "s/^Version:.*/Version: $PACKAGE_VERSION/" headless/packaging/debian/control \
-            > "$deb_root/DEBIAN/control"
-          install -m 0755 headless/packaging/debian/postinst "$deb_root/DEBIAN/postinst"
-          install -m 0755 headless/packaging/debian/prerm "$deb_root/DEBIAN/prerm"
-          install -m 0755 headless/target/release/openfortivpn-manager-headless \
-            "$deb_root/usr/local/sbin/openfortivpn-manager-headless"
-          install -m 0755 build/headless-ci/openfortivpn \
-            "$deb_root/usr/local/libexec/openfortivpn-manager-headless/openfortivpn"
-          install -m 0644 headless/README.md \
-            "$deb_root/usr/share/doc/openfortivpn-manager-headless/README.md"
-          cp -a headless/examples/. \
-            "$deb_root/usr/share/doc/openfortivpn-manager-headless/examples/"
-          dpkg-deb --build --root-owner-group "$deb_root" \
-            "$artifact_dir/openfortivpn-manager-headless_${PACKAGE_VERSION}_amd64.deb"
+          sh scripts/package-headless.sh \
+            headless/target/release/openfortivpn-manager-headless \
+            build/headless-ci/openfortivpn \
+            headless-dist
 
       - name: Inspect tar package without installing it
         env:
@@ -184,14 +195,25 @@ jobs:
           test "$(dpkg-deb --field "$deb" Architecture)" = "amd64"
           dpkg-deb --extract "$deb" "$extract_dir"
           dpkg-deb --control "$deb" "$control_dir"
-          test -x "$extract_dir/usr/local/sbin/openfortivpn-manager-headless"
-          test -x "$extract_dir/usr/local/libexec/openfortivpn-manager-headless/openfortivpn"
+          test -x "$extract_dir/usr/lib/openfortivpn-manager-headless/manager"
+          test -x "$extract_dir/usr/lib/openfortivpn-manager-headless/openfortivpn"
           test -f "$extract_dir/usr/share/doc/openfortivpn-manager-headless/README.md"
           test -f "$extract_dir/usr/share/doc/openfortivpn-manager-headless/examples/server.json"
           test -x "$control_dir/postinst"
           test -x "$control_dir/prerm"
           sh -n "$control_dir/postinst"
           sh -n "$control_dir/prerm"
+
+      - name: Verify dpkg upgrade and rollback in an isolated container
+        env:
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          docker build -t ofv-package-tests -f scripts/package-test.Dockerfile scripts
+          docker run --rm --network none \
+            -e OFV_DISPOSABLE_PACKAGE_TEST=1 \
+            -v "$GITHUB_WORKSPACE:/source:ro" \
+            ofv-package-tests sh /source/scripts/verify-headless-package.sh \
+            "/source/headless-dist/openfortivpn-manager-headless_${PACKAGE_VERSION}_amd64.deb"
 
       - name: Upload inspected packages
         uses: actions/upload-artifact@v6

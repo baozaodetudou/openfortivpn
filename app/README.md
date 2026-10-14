@@ -1,10 +1,10 @@
 # OpenFortiVPN Manager
 
-Tauri desktop application for managing OpenFortiVPN profiles and concurrent
+Tauri desktop application for managing OpenFortiVPN profiles and supervised
 connection processes on Linux, macOS and Windows.
 
 Each profile owns at most one connection at a time. Different profiles can be
-connected concurrently. The UI exposes connect, disconnect and reconnect as
+managed independently; only one may own system network resources at a time until coordinated platform backends are verified. The UI exposes connect, disconnect and reconnect as
 state-aware actions; editing and deletion are blocked while that profile is
 active. Concurrent profiles should use non-overlapping split routes. Two VPNs
 that both replace the default route or global DNS may conflict at the operating

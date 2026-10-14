@@ -1,0 +1,13 @@
+[ 11%] Built target test_ppp
+[ 17%] Built target test_url_encoding
+[ 20%] Building C object CMakeFiles/openfortivpn.dir/src/manager_control.c.o
+[ 29%] Built target test_tls_policy
+[ 35%] Built target test_dns_policy
+[ 41%] Built target test_saml_policy
+[ 44%] Linking C executable openfortivpn
+[ 47%] Building C object CMakeFiles/test_manager_control.dir/tests/test_manager_control.c.o
+[ 50%] Building C object CMakeFiles/test_manager_control.dir/src/manager_control.c.o
+[ 55%] Built target test_thread_group
+[ 94%] Built target openfortivpn
+[ 97%] Linking C executable test_manager_control
+[100%] Built target test_manager_control

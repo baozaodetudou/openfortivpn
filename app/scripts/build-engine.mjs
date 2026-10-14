@@ -60,7 +60,7 @@ if (skipEngineBuild) {
 }
 
 if (!windows) {
-  run("cargo", ["build", "--release", "--manifest-path", join(helperDirectory, "Cargo.toml")]);
+  run("cargo", ["build", "--locked", "--release", "--manifest-path", join(helperDirectory, "Cargo.toml")]);
   const helperExecutable = join(helperDirectory, "target", "release", helperName);
   if (!existsSync(helperExecutable)) {
     throw new Error(`Cannot find built ${helperName} in ${helperDirectory}`);

@@ -4,6 +4,10 @@
 rc=0
 
 for file in "$@"; do
+  # Validation artifacts retain the exact output produced by external tools.
+  case "$file" in
+    .codex-tasks/*/evidence/*) continue ;;
+  esac
   # Empty placeholders and binary assets have no text-line ending to check.
   if [ ! -s "$file" ] || ! grep -Iq '' "$file"; then
     continue

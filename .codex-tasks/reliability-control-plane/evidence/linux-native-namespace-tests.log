@@ -1,0 +1,35 @@
+
+running 30 tests
+test lifecycle::tests::auth_tls_config_and_network_mutation_errors_do_not_retry ... ok
+test network_authority::tests::crashed_worker_or_failed_cleanup_keeps_the_durable_reservation ... ok
+test network_authority::tests::every_manager_is_excluded_until_reap_and_cleanup_are_confirmed ... ok
+test network_authority::tests::installer_and_process_binding_cannot_bypass_the_active_owner ... ok
+test network_authority::tests::invalid_records_and_symlinks_fail_closed_before_recovery_callback ... ok
+test network_authority::tests::older_records_never_gain_pre_spawn_gate_proof_during_migration ... ok
+test network_control::tests::malformed_cross_attempt_and_unsafe_transport_plans_are_rejected ... ok
+test network_control::tests::only_a_complete_bound_ordered_plan_can_reach_the_privileged_worker ... ok
+test network_linux::tests::malformed_attributes_are_rejected_before_kernel_operations ... ok
+test network_linux::tests::namespace_routes_are_owned_and_external_replacements_survive ... ok
+test network_linux_worker::tests::binding_is_durable_before_every_platform_call_and_routes_precede_dns ... ok
+test network_linux_worker::tests::binding_is_rechecked_before_inspect_apply_and_remove_and_never_authorizes_foreign_resources ... ok
+test network_linux_worker::tests::binding_remove_failure_keeps_recovery_anchor_after_network_cleanup_and_retry_is_idempotent ... ok
+test network_linux_worker::tests::durable_store_proof_is_reloaded_and_corrupt_journals_block_binding_removal ... ok
+test network_linux_worker::tests::failed_binding_save_or_backend_construction_cannot_mutate_resources ... ok
+test network_linux_worker::tests::filesystem_binding_records_are_private_bounded_and_cannot_follow_symlinks ... ok
+test network_linux_worker::tests::interface_loss_after_process_death_retains_resources_and_the_durable_binding ... ok
+test network_linux_worker::tests::invalid_interface_transport_full_tunnel_and_unrouted_dns_fail_before_persistence ... ok
+test network_linux_worker::tests::known_partial_apply_rolls_back_but_uncertain_creation_retains_the_binding ... ok
+test network_linux_worker::tests::missing_or_mismatched_binding_blocks_cleanup_and_external_replacement_is_preserved ... ok
+test network_linux_worker::tests::namespace_native_transactions_verify_tun_binding_and_release_owned_routes ... ok
+test network_linux_worker::tests::rename_then_failed_fsync_never_unlinks_the_binding_using_only_cached_state ... ok
+test network_linux_worker::tests::runtime_threads_cannot_enter_native_transaction_driver_even_as_root ... ok
+test network_resolved::tests::dbus_known_partial_failure_rolls_back_but_external_replacement_survives ... ok
+test network_resolved::tests::dbus_split_dns_roundtrip_external_change_and_interface_binding ... ok
+test network_resolved::tests::namespace_route_and_dbus_failure_roll_back_together_under_durable_lock ... ok
+test network_windows_dns_policy::tests::duplicate_owned_rule_and_direct_access_changes_fail_closed ... ok
+test network_windows_dns_policy::tests::exact_effective_policy_and_unchanged_unknown_properties_are_required ... ok
+test network_windows_dns_policy::tests::parent_child_exact_wildcard_and_foreign_rules_block_before_mutation ... ok
+test network_windows_dns_policy::tests::rejects_global_invalid_duplicate_and_unusable_dns ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 74 filtered out; finished in 0.24s
+

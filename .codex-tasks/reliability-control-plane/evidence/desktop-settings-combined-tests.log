@@ -1,0 +1,190 @@
+TAP version 13
+# Subtest: appearance normalizes untrusted storage and persists only whitelisted preferences
+ok 1 - appearance normalizes untrusted storage and persists only whitelisted preferences
+  ---
+  duration_ms: 1.855578
+  type: 'test'
+  ...
+# Subtest: native appearance commands stay ordered and coalesce changes while an older command is pending
+ok 2 - native appearance commands stay ordered and coalesce changes while an older command is pending
+  ---
+  duration_ms: 0.694973
+  type: 'test'
+  ...
+# Subtest: stale native errors cannot replace a newer preference and disposal stops queued native work
+ok 3 - stale native errors cannot replace a newer preference and disposal stops queued native work
+  ---
+  duration_ms: 0.230268
+  type: 'test'
+  ...
+# Subtest: native failure preserves storage failure and fallback error text does not stringify secret fields
+ok 4 - native failure preserves storage failure and fallback error text does not stringify secret fields
+  ---
+  duration_ms: 0.300963
+  type: 'test'
+  ...
+# Subtest: desktop preference writes invalidate older refreshes and preserve the other preference
+ok 5 - desktop preference writes invalidate older refreshes and preserve the other preference
+  ---
+  duration_ms: 0.596456
+  type: 'test'
+  ...
+# Subtest: desktop preferences rollback failed writes and ignore responses after disposal
+ok 6 - desktop preferences rollback failed writes and ignore responses after disposal
+  ---
+  duration_ms: 0.252905
+  type: 'test'
+  ...
+# Subtest: autostart verifies the native change and a stale read cannot undo the chosen state
+ok 7 - autostart verifies the native change and a stale read cannot undo the chosen state
+  ---
+  duration_ms: 0.453333
+  type: 'test'
+  ...
+# Subtest: autostart mismatch is reported and duplicate writes are not submitted while busy
+ok 8 - autostart mismatch is reported and duplicate writes are not submitted while busy
+  ---
+  duration_ms: 0.199777
+  type: 'test'
+  ...
+# Subtest: remote snapshots cannot replace a newer event or the outcome of a pending mutation
+ok 9 - remote snapshots cannot replace a newer event or the outcome of a pending mutation
+  ---
+  duration_ms: 0.748951
+  type: 'test'
+  ...
+# Subtest: closing or reopening the remote modal prevents a late token reveal while status still settles
+ok 10 - closing or reopening the remote modal prevents a late token reveal while status still settles
+  ---
+  duration_ms: 1.144502
+  type: 'test'
+  ...
+# Subtest: remote disposal clears a revealed token and suppresses pending failures or updates
+ok 11 - remote disposal clears a revealed token and suppresses pending failures or updates
+  ---
+  duration_ms: 0.655981
+  type: 'test'
+  ...
+# Subtest: remote writes keep the v1 payload and auto-close only when no one-time token was returned
+ok 12 - remote writes keep the v1 payload and auto-close only when no one-time token was returned
+  ---
+  duration_ms: 0.361677
+  type: 'test'
+  ...
+# Subtest: late clipboard and opener failures cannot change a closed modal and old tokens cannot be copied
+ok 13 - late clipboard and opener failures cannot change a closed modal and old tokens cannot be copied
+  ---
+  duration_ms: 0.884057
+  type: 'test'
+  ...
+# Subtest: a remounted page waits for an old native appearance command before applying its own intent
+ok 14 - a remounted page waits for an old native appearance command before applying its own intent
+  ---
+  duration_ms: 1.041216
+  type: 'test'
+  ...
+# Subtest: a remounted settings page reads the outcome of an already submitted old write
+ok 15 - a remounted settings page reads the outcome of an already submitted old write
+  ---
+  duration_ms: 0.306387
+  type: 'test'
+  ...
+# Subtest: disposed settings writes still queued behind native work are skipped before submission
+ok 16 - disposed settings writes still queued behind native work are skipped before submission
+  ---
+  duration_ms: 0.284253
+  type: 'test'
+  ...
+# Subtest: an opener module loaded after modal close, reopen or disposal never launches the old request
+ok 17 - an opener module loaded after modal close, reopen or disposal never launches the old request
+  ---
+  duration_ms: 0.184674
+  type: 'test'
+  ...
+# Subtest: the actual page does not launch a VPN after disposal while a privilege check is pending
+ok 18 - the actual page does not launch a VPN after disposal while a privilege check is pending
+  ---
+  duration_ms: 41.124349
+  type: 'test'
+  ...
+# Subtest: the actual page does not connect a pending profile after a disposed helper-install response
+ok 19 - the actual page does not connect a pending profile after a disposed helper-install response
+  ---
+  duration_ms: 29.451572
+  type: 'test'
+  ...
+# Subtest: the actual page does not copy an exported configuration returned after disposal
+ok 20 - the actual page does not copy an exported configuration returned after disposal
+  ---
+  duration_ms: 24.566217
+  type: 'test'
+  ...
+# Subtest: a reconnect under the same intent replaces its old attempt even within one clock second
+ok 21 - a reconnect under the same intent replaces its old attempt even within one clock second
+  ---
+  duration_ms: 2.42304
+  type: 'test'
+  ...
+# Subtest: older profile replies never overwrite a newer revision and log retention is deterministic
+ok 22 - older profile replies never overwrite a newer revision and log retention is deterministic
+  ---
+  duration_ms: 1.455237
+  type: 'test'
+  ...
+# Subtest: an event subscription resolving after unmount is removed and cannot update the disposed page
+ok 23 - an event subscription resolving after unmount is removed and cannot update the disposed page
+  ---
+  duration_ms: 0.88371
+  type: 'test'
+  ...
+# Subtest: structured IPC failures show their message without exposing arbitrary response fields
+ok 24 - structured IPC failures show their message without exposing arbitrary response fields
+  ---
+  duration_ms: 0.451259
+  type: 'test'
+  ...
+# Subtest: newer events and refreshes prevent stale snapshots from replacing current state
+ok 25 - newer events and refreshes prevent stale snapshots from replacing current state
+  ---
+  duration_ms: 0.459656
+  type: 'test'
+  ...
+# Subtest: certificate prompts reject an old attempt, changed target or revision and bound event memory
+ok 26 - certificate prompts reject an old attempt, changed target or revision and bound event memory
+  ---
+  duration_ms: 1.945425
+  type: 'test'
+  ...
+# Subtest: late authentication and recovery replies cannot update a disposed page or supersede a newer reply
+ok 27 - late authentication and recovery replies cannot update a disposed page or supersede a newer reply
+  ---
+  duration_ms: 0.386356
+  type: 'test'
+  ...
+# Subtest: certificate trust awaits backend process cleanup proof and uses the prompted revision
+ok 28 - certificate trust awaits backend process cleanup proof and uses the prompted revision
+  ---
+  duration_ms: 1.051666
+  type: 'test'
+  ...
+# Subtest: changed certificate targets and disposal during backend wait never submit a trust write
+ok 29 - changed certificate targets and disposal during backend wait never submit a trust write
+  ---
+  duration_ms: 4.035941
+  type: 'test'
+  ...
+# Subtest: desktop deletes carry the observed revision and explicitly stop the active attempt first
+ok 30 - desktop deletes carry the observed revision and explicitly stop the active attempt first
+  ---
+  duration_ms: 0.963212
+  type: 'test'
+  ...
+1..30
+# tests 30
+# suites 0
+# pass 30
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 970.380137

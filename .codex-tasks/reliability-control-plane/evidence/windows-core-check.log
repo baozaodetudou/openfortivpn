@@ -1,0 +1,22 @@
+    Checking openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+warning: struct `FaultBackend` is never constructed
+   --> crates/manager-core/src/profile_service.rs:517:12
+    |
+517 |     struct FaultBackend {
+    |            ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `boundary` and `recover` are never used
+   --> crates/manager-core/src/profile_service.rs:526:12
+    |
+525 |     impl FaultBackend {
+    |     ----------------- methods in this implementation
+526 |         fn boundary(&mut self) -> Result<(), ControlError> {
+    |            ^^^^^^^^
+...
+536 |         fn recover(&mut self) {
+    |            ^^^^^^^
+
+warning: `openfortivpn-manager-core` (lib test) generated 2 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.79s

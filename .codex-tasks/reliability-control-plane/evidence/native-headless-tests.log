@@ -1,0 +1,33 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling openfortivpn-manager-core v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-core)
+   Compiling openfortivpn-manager-http v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-http)
+   Compiling openfortivpn-manager-headless v0.1.6 (/Users/doumao/code/github/openfortivpn/headless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.70s
+     Running unittests src/lib.rs (headless/target/debug/deps/openfortivpn_manager_headless-fca1d01ffbe0cb2a)
+
+running 2 tests
+test native_network::tests::cancelled_reader_cannot_release_ownership_of_a_running_worker ... ok
+test manager::tests::native_handshake_commits_before_ready_and_releases_before_global_owner ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 46 filtered out; finished in 0.65s
+
+     Running unittests src/main.rs (headless/target/debug/deps/openfortivpn_manager_headless-9c7ad4dd3b8a49d3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/lifecycle_stress.rs (headless/target/debug/deps/lifecycle_stress-edca5fb046f1f289)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/storage_process.rs (headless/target/debug/deps/storage_process-91d188ce4cd4c335)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+

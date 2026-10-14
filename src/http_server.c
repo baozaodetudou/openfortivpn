@@ -20,6 +20,8 @@
 #include "http.h"
 #include "log.h"
 #include "tunnel.h"
+#include "saml_policy.h"
+#include <openssl/crypto.h>
 
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -28,6 +30,7 @@
 
 #include <ctype.h>
 #include <string.h>
+#include <time.h>
 
 static void print_url(const struct vpn_config *cfg)
 {
@@ -38,7 +41,8 @@ static void print_url(const struct vpn_config *cfg)
 	// Desired string is
 	// https://company.com:port/remote/saml/start?redirect=1(&realm=<str>)
 	// with the realm being optional
-	static const char uri_pattern[] = "https://%s:%d/remote/saml/start?redirect=1%s%s";
+	static const char uri_pattern[] =
+	        "https://%s:%d/remote/saml/start?redirect=1%s%s";
 
 	if (cfg->realm[0] != '\0') {
 		// url_encode requires three times the size
@@ -88,11 +92,15 @@ end:
 // Convenience function to send a response with a user readable status message and the
 // request URL shown for debug purposes. The response is shown in the user's browser
 // after being redirected from the Fortinet Server.
-static void send_status_response(int socket, const char *userMessage)
+static void send_status_response(int socket, int success,
+                                 const char *userMessage)
 {
-	static const char replyHeader[] = "HTTP/1.1 200 OK\r\n"
+	static const char replyHeader[] = "HTTP/1.1 %s\r\n"
 	                                  "Content-Type: text/html\r\n"
-	                                  "Content-Length: %lu\r\n"
+	                                  "Content-Length: %zu\r\n"
+	                                  "Cache-Control: no-store\r\n"
+	                                  "Content-Security-Policy: default-src 'none'\r\n"
+	                                  "X-Content-Type-Options: nosniff\r\n"
 	                                  "Connection: close\r\n"
 	                                  "\r\n";
 
@@ -112,7 +120,9 @@ static void send_status_response(int socket, const char *userMessage)
 	}
 	snprintf(replyBodyBuffer, replyBodySize, replyBody, userMessage);
 
-	int replyHeaderSize = snprintf(NULL, 0, replyHeader, replyBodySize) + 1;
+	const char *status = success ? "200 OK" : "400 Bad Request";
+	int replyHeaderSize = snprintf(NULL, 0, replyHeader, status,
+	                               replyBodySize) + 1;
 
 	replyHeaderBuffer = malloc(replyHeaderSize);
 	if (!replyHeaderBuffer) {
@@ -122,6 +132,7 @@ static void send_status_response(int socket, const char *userMessage)
 	snprintf(replyHeaderBuffer,
 	         replyHeaderSize,
 	         replyHeader,
+	         status,
 	         strlen(replyBodyBuffer));
 
 	// Using two separate writes here to make the code not more complicated assembling
@@ -136,87 +147,59 @@ end:
 	free(replyHeaderBuffer);
 }
 
-static int process_request(int new_socket, char *id)
+static int process_request(int new_socket, unsigned int port, char *id)
 {
 	log_info("Processing HTTP SAML request\n");
 
 	int flag = 1;
 
-	if (setsockopt(new_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag))) {
+	if (setsockopt(new_socket, IPPROTO_TCP, TCP_NODELAY, &flag,
+	               sizeof(flag))) {
 		log_error("Failed to set socket options: %s\n", strerror(errno));
 		return -1;
 	}
 
-	// Read the request
-	char request[1024];
-	// -1 : Save one place for termination in case the request is about to
-	// fill the entire buffer.
-	ssize_t read_result = read(new_socket, request, sizeof(request) - 1);
+	struct timeval timeout = {2, 0};
 
-	// Check for '=id' in the response
-	// If the received request from the server is larger than the buffer,
-	// the result will not be null-terminated causing strlen to behave wrong.
-	if (read_result < 0) {
-		log_error("Bad request: %s\n", strerror(errno));
-		send_status_response(new_socket, "Invalid redirect response from Fortinet server. VPN could not be established.");
+	if (setsockopt(new_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+	               sizeof(timeout)) != 0 ||
+	    setsockopt(new_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout,
+	               sizeof(timeout)) != 0)
+		return -1;
+	char request[OFV_SAML_REQUEST_LIMIT + 1];
+	size_t used = 0;
+	struct timespec started, current;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &started) != 0)
+		return -1;
+	while (used < OFV_SAML_REQUEST_LIMIT) {
+		if (clock_gettime(CLOCK_MONOTONIC, &current) != 0 ||
+		    current.tv_sec - started.tv_sec >= 2)
+			break;
+		ssize_t got = read(new_socket, request + used,
+		                   OFV_SAML_REQUEST_LIMIT - used);
+
+		if (got <= 0)
+			break;
+		used += (size_t)got;
+		request[used] = 0;
+		if (memchr(request, 0, used) || strstr(request, "\r\n\r\n"))
+			break;
+	}
+	int valid = saml_parse_request(request, used, port, id,
+	                               MAX_SAML_SESSION_ID_LENGTH + 1);
+
+	OPENSSL_cleanse(request, sizeof(request));
+	if (valid != 0) {
+		log_warn("Rejected invalid SAML callback\n");
+		send_status_response(new_socket, 0,
+		                     "Invalid SAML redirect. VPN could not be established.");
 		return -1;
 	}
 
-	// Safety Null-terminate
-	request[sizeof(request) - 1] = 0;
-	request[read_result] = 0;
-
-	static const char request_head[] = "GET /?id=";
-
-	if (strncmp(request, request_head, strlen(request_head)) != 0) {
-		log_error("Bad request\n");
-		send_status_response(new_socket, "Invalid redirect response from Fortinet server. VPN could not be established.");
-		return -1;
-	}
-
-	// Extract the id
-	static const char token_delimiter[] = " &\r\n";
-	// Use next_token because strsep does modify the input argument
-	// and we don't want to loose our request pointer.
-	char *next_token = request + strlen(request_head);
-	char *id_start = strsep(&next_token, token_delimiter);
-
-	if (next_token == NULL) {
-		// In case not found, next_token was set to NULL
-		// This should be invalid because we expect \r\n
-		// at the end of the GET request line
-		log_error("Bad request format\n");
-		send_status_response(new_socket, "Invalid formatting of Fortinet server redirect response. VPN could not be established.");
-		return -1;
-	}
-
-	// strsep inserted a NULL at the location of the delimiter.
-	int id_length = strlen(id_start);
-
-	if (id_length == 0 || id_length >= MAX_SAML_SESSION_ID_LENGTH) {
-		log_error("Bad request id\n");
-		send_status_response(new_socket, "Invalid SAML session id received from Fortinet server. VPN could not be established.");
-		return -1;
-	}
-
-	strncpy(id, id_start, MAX_SAML_SESSION_ID_LENGTH);
-	id[MAX_SAML_SESSION_ID_LENGTH] = 0; // Arrays in the structs are one byte extra
-
-	for (int i = 0; i < id_length; i++) {
-		if (isalnum((unsigned char)id[i]) || id[i] == '-')
-			continue;
-		log_error("Invalid id format\n");
-		send_status_response(new_socket, "Invalid SAML session id received from Fortinet server. VPN could not be established.");
-		return -1;
-	}
-
-	send_status_response(new_socket,
+	send_status_response(new_socket, 1,
 	                     "SAML session id received from Fortinet server. VPN will be established...<br>\r\n"
-	                     "You may close this browser tab now.<br>\r\n"
-	                     "<script>\r\n"
-	                     "window.setTimeout(() => { window.close(); }, 5000);\r\n"
-	                     "document.write(\"<br>This window will close automatically in 5 seconds.\");\r\n"
-	                     "</script>\r\n");
+	                     "You may close this browser tab now.<br>\r\n");
 	return 0;
 }
 
@@ -231,7 +214,9 @@ int wait_for_http_request(struct vpn_config *config)
 	int server_fd, new_socket;
 	struct sockaddr_in address;
 	int opt = 1;
-	int addrlen = sizeof(address);
+	socklen_t addrlen = sizeof(address);
+
+	config->saml_session_id[0] = 0;
 
 	// Creating socket file descriptor
 	server_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -241,12 +226,14 @@ int wait_for_http_request(struct vpn_config *config)
 	}
 
 	// Forcefully attaching socket to the port
-	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+	if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt,
+	               sizeof(opt))) {
 		close(server_fd);
 		log_error("Failed to set socket options: %s\n", strerror(errno));
 		return -1;
 	}
 
+	memset(&address, 0, sizeof(address));
 	address.sin_family = AF_INET;
 	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	address.sin_port = htons(config->saml_port);
@@ -288,7 +275,7 @@ int wait_for_http_request(struct vpn_config *config)
 			log_debug("Incoming HTTP connection\n");
 			new_socket = accept(server_fd,
 			                    (struct sockaddr *)&address,
-			                    (socklen_t *)&addrlen);
+			                    &addrlen);
 			if (new_socket < 0) {
 				log_error("Failed to accept connection: %s\n",
 				          strerror(errno));
@@ -299,7 +286,12 @@ int wait_for_http_request(struct vpn_config *config)
 			continue;
 		}
 
-		int result = process_request(new_socket, config->saml_session_id);
+		if ((ntohl(address.sin_addr.s_addr) & 0xff000000u) != 0x7f000000u) {
+			close(new_socket);
+			continue;
+		}
+		int result = process_request(new_socket, config->saml_port,
+		                             config->saml_session_id);
 
 		close(new_socket);
 		if (result == 0)
@@ -310,7 +302,7 @@ int wait_for_http_request(struct vpn_config *config)
 
 	close(server_fd);
 
-	if (max_tries == 0 && strlen(config->saml_session_id) == 0) {
+	if (config->saml_session_id[0] == 0) {
 		log_error("Finally failed to retrieve SAML authentication token\n");
 		return -1;
 	}

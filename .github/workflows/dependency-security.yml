@@ -1,0 +1,59 @@
+name: Dependency security
+on:
+  pull_request:
+  push:
+    branches: [main, master, release]
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rust:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install fixed audit tool
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit all separately shipped Cargo graphs
+        run: |
+          set -eu
+          for lock in Cargo.lock headless/Cargo.lock app/src-tauri/Cargo.lock app/src-tauri/helper/Cargo.lock; do
+            cargo audit --file "$lock"
+          done
+  frontend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10.24.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      - run: pnpm --dir app install --frozen-lockfile
+      - run: node --test tests/dependency-audit.test.mjs
+      - run: node scripts/audit-npm.mjs
+  review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high

@@ -1,0 +1,55 @@
+   Compiling openfortivpn-manager-http v0.1.6 (/Users/doumao/code/github/openfortivpn/crates/manager-http)
+   Compiling openfortivpn-manager-headless v0.1.6 (/Users/doumao/code/github/openfortivpn/headless)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.33s
+     Running unittests src/lib.rs (headless/target/debug/deps/openfortivpn_manager_headless-fca1d01ffbe0cb2a)
+
+running 46 tests
+test install::tests::unit_has_security_and_restart_settings ... ok
+test manager::tests::kill_is_not_sent_after_engine_executable_changes ... ok
+test manager::tests::signal_is_sent_only_for_the_captured_engine_process ... ok
+test manager::tests::premature_connected_state_is_not_ready ... ok
+test install::tests::engine_discovery_finds_repository_build ... ok
+test manager::tests::term_is_not_sent_after_pid_or_pgid_reuse ... ok
+test api::tests::root_serves_the_token_login_web_console ... ok
+test api::tests::health_is_public_but_api_requires_bearer_token ... ok
+test api::tests::invalid_profile_uses_a_typed_400_envelope ... ok
+test api::tests::disk_token_rotation_invalidates_old_token_without_stopping_manager ... ok
+test manager::tests::stopping_reservation_rejects_edit_and_connect ... ok
+test api::tests::profile_api_never_returns_vpn_password ... ok
+test manager::tests::pipe_errors_and_malformed_output_never_confirm_complete_cleanup ... ok
+test api::tests::v2_revisions_survive_restart_and_reject_stale_changes ... ok
+test manager::tests::authentication_failure_blocks_automatic_retry ... ok
+test storage::tests::only_one_service_can_own_the_runtime_directory ... ok
+test storage::tests::mismatched_operator_private_key_is_never_overwritten ... ok
+test storage::tests::bind_change_regenerates_the_certificate_identity ... ok
+test manager::tests::failed_global_release_never_deletes_the_local_recovery_anchor ... ok
+test storage::tests::rejects_configuration_injection ... ok
+test storage::tests::interrupted_profile_secret_pair_is_recovered_before_reading ... ok
+test storage::tests::invalid_backup_never_changes_current_profile_or_secret ... ok
+test storage::tests::operator_certificate_is_preserved_and_wrong_identity_is_rejected ... ok
+test manager::tests::crash_before_identity_capture_blocks_auto_connect_and_other_profiles ... ok
+test tests::ipv6_bind_uses_socket_address_formatting ... ok
+test storage::tests::rejects_passwords_the_c_parser_cannot_preserve ... ok
+test storage::tests::passwords_are_separate_and_private ... ok
+test storage::tests::runtime_config_is_private ... ok
+test storage::tests::secrets_symlink_is_rejected_before_reading ... ok
+test manager::tests::stale_failure_cannot_clear_a_new_attempt ... ok
+test storage::tests::legacy_downgrade_is_offline_preserves_password_pair_and_keeps_a_private_backup ... ok
+test storage::tests::profile_save_cannot_adopt_a_client_supplied_credential_reference ... ok
+test manager::tests::private_otp_and_pre_adapter_lease_flow_without_persisting_responses ... ok
+test storage::tests::legacy_migration_keeps_a_private_consistent_pair_and_future_schema_is_not_overwritten ... ok
+test storage::tests::session_password_is_connectable_but_not_persisted ... ok
+test manager::tests::legacy_network_ownership_blocks_conflicting_profiles ... ok
+test tests::offline_diagnostics_never_exports_credentials_or_profile_identity ... ok
+test manager::tests::recovery_acknowledgement_rejects_a_live_owned_process ... ok
+test tests::occupied_https_port_never_starts_auto_connect ... ok
+test storage::tests::backup_restore_is_private_revisioned_and_refuses_online_restore ... ok
+test manager::tests::unexpected_exit_retries_continuously_with_a_bounded_delay ... ok
+test manager::tests::failed_exec_releases_the_unstarted_reservation_and_allows_a_later_real_attempt ... ok
+test manager::tests::delayed_stop_retains_ownership_until_reaped ... ok
+test storage::tests::concurrent_successful_saves_are_not_lost ... ok
+test manager::tests::independent_managers_share_one_system_network_authority ... ok
+test manager::tests::failed_network_cleanup_blocks_new_connections_after_process_exit ... ok
+
+test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.66s
+
