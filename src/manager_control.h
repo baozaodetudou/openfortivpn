@@ -8,7 +8,8 @@ int manager_control_enabled(void);
 const char *manager_control_attempt(void);
 int manager_control_decode(const char *line, const char *request_id,
                            const char *action, char *response, size_t capacity);
-int manager_control_otp(const char *prompt, char *response, size_t capacity);
+int manager_control_otp(const char *prompt, char *response,
+                        size_t capacity);
 int manager_control_network_gate(struct tunnel *tunnel);
 int manager_control_network_apply(struct tunnel *tunnel);
 int manager_control_network_release(struct tunnel *tunnel);

@@ -67,7 +67,9 @@ int http_send(struct tunnel *tunnel, const char *request, ...)
 	else if (length >= HTTP_BUFFER_SIZE)
 		return ERR_HTTP_TOO_LONG;
 
-	log_debug_details("%s: sending %d bytes (authentication data omitted)\n", __func__, length);
+	log_debug_details("%s: sending %d bytes (authentication data omitted)\n",
+	                  __func__,
+	                  length);
 
 	while (n == 0)
 		n = safe_ssl_write(tunnel->ssl_handle, (uint8_t *) buffer,
@@ -141,7 +143,9 @@ int http_receive(struct tunnel *tunnel,
 		bytes_read += n;
 		buffer[bytes_read] = '\0';
 
-		log_debug_details("%s: received %u bytes (authentication data omitted)\n", __func__, bytes_read);
+		log_debug_details("%s: received %u bytes (authentication data omitted)\n",
+		                  __func__,
+		                  bytes_read);
 
 		if (!header_size) {
 			/* Have we reached the end of the HTTP header? */
@@ -368,7 +372,8 @@ end:
 	return ret;
 }
 
-static int auth_get_cookie(struct tunnel *tunnel, char *buf, uint32_t buffer_size)
+static int auth_get_cookie(struct tunnel *tunnel, char *buf,
+                           uint32_t buffer_size)
 {
 	const char *line;
 
@@ -549,10 +554,12 @@ static int try_otp_auth(struct tunnel *tunnel, const char *buffer,
 
 				sprintf(hint, "%s_%s_%s_otp",
 				        cfg->username, cfg->realm, cfg->gateway_host);
-                if (manager_control_enabled())
-                    manager_control_otp(p,cfg->otp,sizeof(cfg->otp));
-                else
-                    read_password(cfg->pinentry, hint, p, cfg->otp, OTP_SIZE);
+				if (manager_control_enabled())
+					manager_control_otp(p, cfg->otp,
+					                    sizeof(cfg->otp));
+				else
+					read_password(cfg->pinentry, hint, p,
+					              cfg->otp, OTP_SIZE);
 				if (cfg->otp[0] == '\0') {
 					log_error("No OTP specified\n");
 					return 0;
@@ -582,7 +589,8 @@ static int try_otp_auth(struct tunnel *tunnel, const char *buffer,
 		return -1;
 	*d++ = '\0';
 	ret = http_request(tunnel, "POST", path, data, res, response_size);
-	memset(tunnel->config->otp, '\0', OTP_SIZE + 1); // clear OTP for next run
+	memset(tunnel->config->otp, '\0',
+	       OTP_SIZE + 1); // clear OTP for next run
 	return ret;
 #undef SPACE_AVAILABLE
 }
@@ -656,7 +664,7 @@ int auth_log_in(struct tunnel *tunnel)
 		         tunnel->config->saml_session_id);
 		log_debug("Exchanging SAML session identifier\n");
 		ret = http_request(tunnel, "GET", uri, "", &res, &response_size);
-        OPENSSL_cleanse(uri, (size_t)required_size);
+		OPENSSL_cleanse(uri, (size_t)required_size);
 		free(uri);
 	} else if (username[0] == '\0' && tunnel->config->password[0] == '\0') {
 		ret = http_request(tunnel, "GET", "/remote/login",
@@ -679,7 +687,8 @@ int auth_log_in(struct tunnel *tunnel)
 	if (ret != 1)
 		goto end;
 
-	ret = get_value_from_response(res, "ret=", auth_ret_text, sizeof(auth_ret_text));
+	ret = get_value_from_response(res, "ret=", auth_ret_text,
+	                              sizeof(auth_ret_text));
 	if (ret == 1) {
 		int auth_ret = strtol(auth_ret_text, NULL, 10);
 
@@ -764,11 +773,14 @@ int auth_log_in(struct tunnel *tunnel)
 
 				sprintf(hint, "%s_%s_%s_2fa",
 				        cfg->username, cfg->realm, cfg->gateway_host);
-                if (manager_control_enabled())
-                    manager_control_otp("Two-factor authentication token",cfg->otp,sizeof(cfg->otp));
-                else
-                    read_password(cfg->pinentry, hint,
-                                  "Two-factor authentication token: ",cfg->otp,OTP_SIZE);
+				if (manager_control_enabled())
+					manager_control_otp("Two-factor authentication token",
+					                    cfg->otp,
+					                    sizeof(cfg->otp));
+				else
+					read_password(cfg->pinentry, hint,
+					              "Two-factor authentication token: ",
+					              cfg->otp, OTP_SIZE);
 
 				if (cfg->otp[0] == '\0') {
 					log_error("No token specified\n");
@@ -835,7 +847,8 @@ int auth_request_vpn_allocation(struct tunnel *tunnel)
 	if (ret != 1)
 		return ret;
 
-	return http_request(tunnel, "GET", "/remote/fortisslvpn", "", NULL, NULL);
+	return http_request(tunnel, "GET", "/remote/fortisslvpn", "", NULL,
+	                    NULL);
 }
 
 
@@ -924,7 +937,8 @@ int auth_get_config(struct tunnel *tunnel)
 	char *buffer;
 	int ret;
 
-	ret = http_request(tunnel, "GET", "/remote/fortisslvpn_xml", "", &buffer, NULL);
+	ret = http_request(tunnel, "GET", "/remote/fortisslvpn_xml", "",
+	                   &buffer, NULL);
 	if (ret == 1) {
 		ret = parse_xml_config(tunnel, buffer);
 		free(buffer);

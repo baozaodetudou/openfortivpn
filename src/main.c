@@ -294,7 +294,7 @@ int main(int argc, char *argv[])
 		.user_agent = NULL,
 	};
 	struct vpn_config cli_cfg = invalid_cfg;
-    int cookie_on_stdin = 0;
+	int cookie_on_stdin = 0;
 
 	const struct option long_options[] = {
 		{"help",                 no_argument,       NULL, 'h'},
@@ -320,9 +320,9 @@ int main(int argc, char *argv[])
 		{"no-dns",               no_argument, &cli_cfg.set_dns, 0},
 		{"use-syslog",           no_argument, &cli_cfg.use_syslog, 1},
 		{"json-events",          no_argument,       NULL, 0},
-        {"capabilities-json",    no_argument,       NULL, 0},
-        {"manager-control",     required_argument, NULL, 0},
-        {"manager-launch-fd",   required_argument, NULL, 0},
+		{"capabilities-json",    no_argument,       NULL, 0},
+		{"manager-control",     required_argument, NULL, 0},
+		{"manager-launch-fd",   required_argument, NULL, 0},
 		{"persistent",           required_argument, NULL, 0},
 		{"ca-file",              required_argument, NULL, 0},
 		{"user-cert",            required_argument, NULL, 0},
@@ -385,32 +385,42 @@ int main(int argc, char *argv[])
 				ret = EXIT_SUCCESS;
 				goto exit;
 			}
-            if (strcmp(long_options[option_index].name, "capabilities-json") == 0) {
-                char crypto_version[256];
+			if (strcmp(long_options[option_index].name,
+			           "capabilities-json") == 0) {
+				char crypto_version[256];
 #ifdef _WIN32
-                const char *launch_gate = "false";
+				const char *launch_gate = "false";
 #else
-                const char *launch_gate = "true";
+				const char *launch_gate = "true";
 #endif
-                json_escape(crypto_version, sizeof(crypto_version),
-                            OpenSSL_version(OPENSSL_VERSION));
-                printf("{\"version\":\"" VERSION "\",\"cryptoVersion\":\"%s\",\"protocolVersion\":2,\"structuredErrors\":true,\"readyEvent\":\"tunnel_up\",\"managerLaunchGate\":%s,\"network\":{\"coordinated\":false,\"exclusiveRequired\":true},\"authentication\":{\"password\":true,\"managerChallenges\":false}}\n", crypto_version, launch_gate);
-                ret = EXIT_SUCCESS;
-                goto exit;
-            }
-            if (strcmp(long_options[option_index].name, "manager-launch-fd") == 0) {
-                if (manager_launch_init(optarg) != 0) goto user_error;
-                break;
-            }
-            if (strcmp(long_options[option_index].name, "manager-control") == 0) {
-                if (manager_control_init(optarg) != 0) {
-                    log_error("Invalid manager attempt identity\n");
-                    ret = OFV_EXIT_CONFIG_FAILED;
-                    goto exit;
-                }
-                event_init(1);
-                break;
-            }
+				json_escape(crypto_version, sizeof(crypto_version),
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+				            SSLeay_version(SSLEAY_VERSION));
+#else
+				            OpenSSL_version(OPENSSL_VERSION));
+#endif
+				printf("{\"version\":\"" VERSION
+				       "\",\"cryptoVersion\":\"%s\",\"protocolVersion\":2,\"structuredErrors\":true,\"readyEvent\":\"tunnel_up\",\"managerLaunchGate\":%s,\"network\":{\"coordinated\":false,\"exclusiveRequired\":true},\"authentication\":{\"password\":true,\"managerChallenges\":false}}\n",
+				       crypto_version, launch_gate);
+				ret = EXIT_SUCCESS;
+				goto exit;
+			}
+			if (strcmp(long_options[option_index].name,
+			           "manager-launch-fd") == 0) {
+				if (manager_launch_init(optarg) != 0)
+					goto user_error;
+				break;
+			}
+			if (strcmp(long_options[option_index].name,
+			           "manager-control") == 0) {
+				if (manager_control_init(optarg) != 0) {
+					log_error("Invalid manager attempt identity\n");
+					ret = OFV_EXIT_CONFIG_FAILED;
+					goto exit;
+				}
+				event_init(1);
+				break;
+			}
 			if (strcmp(long_options[option_index].name,
 			           "json-events") == 0) {
 				event_init(1);
@@ -639,14 +649,14 @@ int main(int argc, char *argv[])
 			}
 			if (strcmp(long_options[option_index].name,
 			           "cookie") == 0) {
-                cookie_on_stdin = 0;
+				cookie_on_stdin = 0;
 				free(cli_cfg.cookie);
 				cli_cfg.cookie = strdup_with_prefix(optarg, "SVPNCOOKIE=");
 				break;
 			}
 			if (strcmp(long_options[option_index].name,
 			           "cookie-on-stdin") == 0) {
-                cookie_on_stdin = 1;
+				cookie_on_stdin = 1;
 				break;
 			}
 			if (strcmp(long_options[option_index].name,
@@ -703,33 +713,34 @@ int main(int argc, char *argv[])
 	if (optind < argc - 1 || optind > argc)
 		goto user_error;
 
-    if (manager_launch_wait() != 0) {
-        ret = OFV_EXIT_CONFIG_FAILED;
-        goto exit;
-    }
+	if (manager_launch_wait() != 0) {
+		ret = OFV_EXIT_CONFIG_FAILED;
+		goto exit;
+	}
 
 	if (cli_cfg.password[0] != '\0')
 		log_warn("You should not pass the password on the command line. Type it interactively or use a configuration file instead.\n");
 
 
-    if (cookie_on_stdin) {
-        char *cookie;
-        if (manager_control_enabled()) {
-            log_error("Manager control cannot share stdin with cookie input\n");
-            ret = OFV_EXIT_CONFIG_FAILED;
-            goto exit;
-        }
-        cookie = read_from_stdin(COOKIE_SIZE);
-        if (cookie == NULL) {
-            log_error("Could not read the cookie from stdin\n");
-            ret = OFV_EXIT_CONFIG_FAILED;
-            goto exit;
-        }
-        free(cli_cfg.cookie);
-        cli_cfg.cookie = strdup_with_prefix(cookie,"SVPNCOOKIE=");
-        OPENSSL_cleanse(cookie,strlen(cookie));
-        free(cookie);
-    }
+	if (cookie_on_stdin) {
+		char *cookie;
+
+		if (manager_control_enabled()) {
+			log_error("Manager control cannot share stdin with cookie input\n");
+			ret = OFV_EXIT_CONFIG_FAILED;
+			goto exit;
+		}
+		cookie = read_from_stdin(COOKIE_SIZE);
+		if (cookie == NULL) {
+			log_error("Could not read the cookie from stdin\n");
+			ret = OFV_EXIT_CONFIG_FAILED;
+			goto exit;
+		}
+		free(cli_cfg.cookie);
+		cli_cfg.cookie = strdup_with_prefix(cookie, "SVPNCOOKIE=");
+		OPENSSL_cleanse(cookie, strlen(cookie));
+		free(cookie);
+	}
 	log_debug("openfortivpn " VERSION "\n");
 	if (strcmp(&REVISION[1], VERSION))
 		log_debug("revision " REVISION "\n");
@@ -798,11 +809,11 @@ int main(int argc, char *argv[])
 	// If username but no password given, interactively ask user
 	if (!cfg.password_set && cfg.username[0] != '\0'
 	    && !cfg.cookie && !cfg.saml_port) {
-        if (manager_control_enabled()) {
-            log_error("Manager mode requires a supplied initial credential\n");
-            ret = OFV_EXIT_AUTH_FAILED;
-            goto exit;
-        }
+		if (manager_control_enabled()) {
+			log_error("Manager mode requires a supplied initial credential\n");
+			ret = OFV_EXIT_AUTH_FAILED;
+			goto exit;
+		}
 		char hint[USERNAME_SIZE + 1 + REALM_SIZE + 1 + GATEWAY_HOST_SIZE + 10];
 
 		sprintf(hint, "%s_%s_%s_password",
@@ -847,11 +858,11 @@ int main(int argc, char *argv[])
 #endif
 
 	if (cfg.saml_port != 0) {
-        if (manager_control_enabled()) {
-            log_error("Legacy SAML callback cannot be associated with a private manager attempt\n");
-            ret = OFV_EXIT_SAML_FAILED;
-            goto exit;
-        }
+		if (manager_control_enabled()) {
+			log_error("Legacy SAML callback cannot be associated with a private manager attempt\n");
+			ret = OFV_EXIT_SAML_FAILED;
+			goto exit;
+		}
 		// Wait for the SAML token from the HTTP GET request
 		if (wait_for_http_request(&cfg) != 0) {
 			log_error("Failed to retrieve SAML cookie from HTTP\n");

@@ -273,7 +273,8 @@ int ssl_connect(struct tunnel *tunnel)
 		                    SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
 	}
 
-	SSL_CTX_set_verify(tunnel->ssl_context, SSL_VERIFY_PEER, tls_defer_verification);
+	SSL_CTX_set_verify(tunnel->ssl_context, SSL_VERIFY_PEER,
+	                   tls_defer_verification);
 
 	/* Load CA certificate if specified */
 	if (tunnel->config->ca_file) {
@@ -282,8 +283,8 @@ int ssl_connect(struct tunnel *tunnel)
 		                                   NULL)) {
 			log_error("Could not load CA certificate: %s\n",
 			          tunnel->config->ca_file);
-            ret = OFV_EXIT_CERT_FAILED;
-            goto err;
+			ret = OFV_EXIT_CERT_FAILED;
+			goto err;
 		}
 	} else {
 		SSL_CTX_set_default_verify_paths(tunnel->ssl_context);
@@ -338,22 +339,23 @@ int ssl_connect(struct tunnel *tunnel)
 		goto err;
 	}
 
-    /* Certificate verification is mandatory even with insecure-ssl. */
-    {
-        char digest[SHA256STRLEN];
-        X509 *cert = SSL_get_peer_certificate(tunnel->ssl_handle);
-        int rejected = tls_certificate_policy(cert, SSL_get_verify_result(tunnel->ssl_handle),
-                                               tunnel->config->gateway_host,
-                                               tunnel->config->cert_whitelist, digest);
+	/* Certificate verification is mandatory even with insecure-ssl. */
+	{
+		char digest[SHA256STRLEN];
+		X509 *cert = SSL_get_peer_certificate(tunnel->ssl_handle);
+		int rejected = tls_certificate_policy(
+		                       cert, SSL_get_verify_result(tunnel->ssl_handle),
+		                       tunnel->config->gateway_host,
+		                       tunnel->config->cert_whitelist, digest);
 
-        X509_free(cert);
-        if (rejected) {
-            log_error("Server certificate verification failed: %s\n", digest);
-            event_emit_cert_error(digest, "verification_failed");
-            ret = OFV_EXIT_CERT_FAILED;
-            goto err;
-        }
-    }
+		X509_free(cert);
+		if (rejected) {
+			log_error("Server certificate verification failed: %s\n", digest);
+			event_emit_cert_error(digest, "verification_failed");
+			ret = OFV_EXIT_CERT_FAILED;
+			goto err;
+		}
+	}
 
 	return 0;
 
@@ -447,12 +449,13 @@ static int on_ppp_if_up(struct tunnel *tunnel)
 	/* Set up routes */
 	if (tunnel->config->set_routes) {
 		tunnel->routes_apply_started = 1;
-        int ret = ipv4_set_tunnel_routes(tunnel);
+		int ret = ipv4_set_tunnel_routes(tunnel);
 
 		if (ret) {
-            event_emit_error(OFV_EXIT_CONFIG_FAILED, "network", "Route application failed");
-            return -1;
-        }
+			event_emit_error(OFV_EXIT_CONFIG_FAILED, "network",
+			                 "Route application failed");
+			return -1;
+		}
 	}
 
 	/* Set up DNS */
@@ -460,9 +463,10 @@ static int on_ppp_if_up(struct tunnel *tunnel)
 		int ret = ipv4_add_nameservers_to_resolv_conf(tunnel);
 
 		if (ret) {
-            event_emit_error(OFV_EXIT_CONFIG_FAILED, "network", "DNS application failed");
-            return -1;
-        }
+			event_emit_error(OFV_EXIT_CONFIG_FAILED, "network",
+			                 "DNS application failed");
+			return -1;
+		}
 	}
 
 	{
@@ -487,9 +491,11 @@ static int on_ppp_if_up(struct tunnel *tunnel)
  */
 static int on_ppp_if_down(struct tunnel *tunnel)
 {
-    int failed = 0;
-    if (tunnel->cleanup_attempted) return tunnel->cleanup_failed;
-    tunnel->cleanup_attempted = 1;
+	int failed = 0;
+
+	if (tunnel->cleanup_attempted)
+		return tunnel->cleanup_failed;
+	tunnel->cleanup_attempted = 1;
 	log_info("Tunnel interface is DOWN.\n");
 	event_emit("tunnel_down", "\"reason\":\"interface_down\"");
 
@@ -499,9 +505,13 @@ static int on_ppp_if_down(struct tunnel *tunnel)
 	if (tunnel->routes_apply_started)
 		failed |= ipv4_restore_routes(tunnel) != 0;
 
-	if (!failed) { tunnel->routes_apply_started = 0; tunnel->dns_apply_started = 0; }
+	if (!failed) {
+		tunnel->routes_apply_started = 0;
+		tunnel->dns_apply_started = 0;
+	}
 	tunnel->cleanup_failed = failed;
-	event_emit("cleanup_result", "\"success\":%s", failed ? "false" : "true");
+	event_emit("cleanup_result", "\"success\":%s",
+	           failed ? "false" : "true");
 	return failed;
 }
 
@@ -591,10 +601,10 @@ int run_tunnel(struct vpn_config *config)
 		goto err_tunnel;
 	}
 
-    if (manager_control_network_gate(&tunnel) != 0) {
-        ret = OFV_EXIT_CONFIG_FAILED;
-        goto err_tunnel;
-    }
+	if (manager_control_network_gate(&tunnel) != 0) {
+		ret = OFV_EXIT_CONFIG_FAILED;
+		goto err_tunnel;
+	}
 	/* Step 4: create wintun adapter (replaces pppd_run) */
 	event_emit("state_change", "\"state\":\"creating_adapter\"");
 	log_debug("Creating wintun adapter\n");
@@ -635,8 +645,8 @@ err_start_tunnel:
 	log_info("Destroyed wintun adapter.\n");
 
 err_tunnel:
-    if (!tunnel.cleanup_attempted)
-        on_ppp_if_down(&tunnel);
+	if (!tunnel.cleanup_attempted)
+		on_ppp_if_down(&tunnel);
 	if (tunnel.cleanup_failed || tunnel.network_apply_failed)
 		ret = OFV_EXIT_CONFIG_FAILED;
 	if (ret != OFV_EXIT_OK)

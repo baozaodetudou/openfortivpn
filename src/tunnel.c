@@ -121,49 +121,54 @@ static int on_ppp_if_up(struct tunnel *tunnel)
 
 	log_info("Interface %s is UP.\n", tunnel->ppp_iface);
 
-    if (tunnel->manager_native_network) {
-        if (manager_control_network_apply(tunnel) != 0) {
-            event_emit_error(OFV_EXIT_CONFIG_FAILED, "network", "Native network transaction failed");
-            return 1;
-        }
-        if (!manager_control_network_interface_up(tunnel)) {
-            event_emit_error(OFV_EXIT_CONFIG_FAILED, "network", "Native VPN interface is no longer up");
-            return 1;
-        }
-    } else {
+	if (tunnel->manager_native_network) {
+		if (manager_control_network_apply(tunnel) != 0) {
+			event_emit_error(OFV_EXIT_CONFIG_FAILED, "network",
+			                 "Native network transaction failed");
+			return 1;
+		}
+		if (!manager_control_network_interface_up(tunnel)) {
+			event_emit_error(OFV_EXIT_CONFIG_FAILED, "network",
+			                 "Native VPN interface is no longer up");
+			return 1;
+		}
+	} else {
 
-	{
-		/* Drop invalid route by pppd (or tun) in all cases. */
-		int ret = ipv4_drop_wrong_route(tunnel);
+		{
+			/* Drop invalid route by pppd (or tun) in all cases. */
+			int ret = ipv4_drop_wrong_route(tunnel);
 
-		if (ret != 0) {
-            event_emit_error(OFV_EXIT_CONFIG_FAILED, "network", "Could not reconcile PPP route");
-            return 1;
-        }
+			if (ret != 0) {
+				event_emit_error(OFV_EXIT_CONFIG_FAILED, "network",
+				                 "Could not reconcile PPP route");
+				return 1;
+			}
+		}
+
+		if (tunnel->config->set_routes) {
+			int ret;
+
+			log_info("Setting new routes...\n");
+
+			tunnel->routes_apply_started = 1;
+			ret = ipv4_set_tunnel_routes(tunnel);
+
+			if (ret != 0) {
+				event_emit_error(OFV_EXIT_CONFIG_FAILED, "network",
+				                 "Route application failed");
+				return 1;
+			}
+		}
+
+		if (tunnel->config->set_dns) {
+			log_info("Adding VPN nameservers...\n");
+			if (ipv4_add_nameservers_to_resolv_conf(tunnel)) {
+				event_emit_error(OFV_EXIT_CONFIG_FAILED, "network",
+				                 "DNS application failed");
+				return 1;
+			}
+		}
 	}
-
-	if (tunnel->config->set_routes) {
-		int ret;
-
-		log_info("Setting new routes...\n");
-
-		tunnel->routes_apply_started = 1;
-        ret = ipv4_set_tunnel_routes(tunnel);
-
-		if (ret != 0) {
-            event_emit_error(OFV_EXIT_CONFIG_FAILED, "network", "Route application failed");
-            return 1;
-        }
-	}
-
-	if (tunnel->config->set_dns) {
-		log_info("Adding VPN nameservers...\n");
-        if (ipv4_add_nameservers_to_resolv_conf(tunnel)) {
-            event_emit_error(OFV_EXIT_CONFIG_FAILED, "network", "DNS application failed");
-            return 1;
-        }
-	}
-    }
 
 	inet_ntop(AF_INET, &tunnel->ipv4.ip_addr,
 	          ip_str, sizeof(ip_str));
@@ -183,9 +188,11 @@ static int on_ppp_if_up(struct tunnel *tunnel)
 
 static int on_ppp_if_down(struct tunnel *tunnel)
 {
-    int failed = 0;
-    if (tunnel->cleanup_attempted) return tunnel->cleanup_failed;
-    tunnel->cleanup_attempted = 1;
+	int failed = 0;
+
+	if (tunnel->cleanup_attempted)
+		return tunnel->cleanup_failed;
+	tunnel->cleanup_attempted = 1;
 #if HAVE_SYSTEMD
 	sd_notify(0, "STOPPING=1");
 #endif
@@ -193,8 +200,8 @@ static int on_ppp_if_down(struct tunnel *tunnel)
 	log_info("Setting %s interface down.\n", tunnel->ppp_iface);
 	event_emit("tunnel_down", "\"reason\":\"interface_down\"");
 
-    if (tunnel->manager_native_network)
-        failed |= manager_control_network_release(tunnel) != 0;
+	if (tunnel->manager_native_network)
+		failed |= manager_control_network_release(tunnel) != 0;
 
 	if (tunnel->routes_apply_started) {
 		log_info("Restoring routes...\n");
@@ -206,9 +213,13 @@ static int on_ppp_if_down(struct tunnel *tunnel)
 		failed |= ipv4_del_nameservers_from_resolv_conf(tunnel) != 0;
 	}
 
-	if (!failed) { tunnel->routes_apply_started = 0; tunnel->dns_apply_started = 0; }
+	if (!failed) {
+		tunnel->routes_apply_started = 0;
+		tunnel->dns_apply_started = 0;
+	}
 	tunnel->cleanup_failed = failed;
-	event_emit("cleanup_result", "\"success\":%s", failed ? "false" : "true");
+	event_emit("cleanup_result", "\"success\":%s",
+	           failed ? "false" : "true");
 	return failed;
 }
 
@@ -664,7 +675,8 @@ static int get_gateway_host_ip(struct tunnel *tunnel)
 	const struct addrinfo hints = { .ai_family = AF_INET };
 	struct addrinfo *result = NULL;
 
-	int ret = getaddrinfo(tunnel->config->gateway_host, NULL, &hints, &result);
+	int ret = getaddrinfo(tunnel->config->gateway_host, NULL, &hints,
+	                      &result);
 
 	if (ret) {
 		if (ret == EAI_SYSTEM)
@@ -901,18 +913,20 @@ err_socket:
 
 static int ssl_verify_cert(struct tunnel *tunnel)
 {
-    char digest[SHA256STRLEN];
-    X509 *cert = SSL_get_peer_certificate(tunnel->ssl_handle);
-    int ret = tls_certificate_policy(cert, SSL_get_verify_result(tunnel->ssl_handle),
-                                     tunnel->config->gateway_host,
-                                     tunnel->config->cert_whitelist, digest);
+	char digest[SHA256STRLEN];
+	X509 *cert = SSL_get_peer_certificate(tunnel->ssl_handle);
+	int ret = tls_certificate_policy(cert,
+	                                 SSL_get_verify_result(tunnel->ssl_handle),
+	                                 tunnel->config->gateway_host,
+	                                 tunnel->config->cert_whitelist, digest);
 
-    if (ret) {
-        event_emit_cert_error(digest, "verification_failed");
-        log_error("Gateway certificate validation failed. Verify the host and CA, or explicitly trust --trusted-cert %s\n", digest);
-    }
-    X509_free(cert);
-    return ret;
+	if (ret) {
+		event_emit_cert_error(digest, "verification_failed");
+		log_error("Gateway certificate validation failed. Verify the host and CA, or explicitly trust --trusted-cert %s\n",
+		          digest);
+	}
+	X509_free(cert);
+	return ret;
 }
 
 /*
@@ -976,6 +990,7 @@ static int pem_passphrase_cb(char *buf, int size, int rwflag, void *u)
 int ssl_connect(struct tunnel *tunnel)
 {
 	int failure = OFV_EXIT_TLS_FAILED;
+
 	ssl_disconnect(tunnel);
 
 	tunnel->ssl_socket = tcp_connect(tunnel);
@@ -1001,7 +1016,8 @@ int ssl_connect(struct tunnel *tunnel)
 		goto err_ssl_socket;
 	}
 
-	SSL_CTX_set_verify(tunnel->ssl_context, SSL_VERIFY_PEER, tls_defer_verification);
+	SSL_CTX_set_verify(tunnel->ssl_context, SSL_VERIFY_PEER,
+	                   tls_defer_verification);
 
 	/* Load the OS default CA files */
 	if (!SSL_CTX_set_default_verify_paths(tunnel->ssl_context))
@@ -1035,7 +1051,8 @@ int ssl_connect(struct tunnel *tunnel)
 
 	/* Set the password callback for PEM certificates with encryption. */
 	SSL_CTX_set_default_passwd_cb(tunnel->ssl_context, &pem_passphrase_cb);
-	SSL_CTX_set_default_passwd_cb_userdata(tunnel->ssl_context, tunnel->config);
+	SSL_CTX_set_default_passwd_cb_userdata(tunnel->ssl_context,
+	                                       tunnel->config);
 
 	if (tunnel->config->cipher_list) {
 		log_debug("Setting cipher list to: %s\n", tunnel->config->cipher_list);
@@ -1405,10 +1422,10 @@ int run_tunnel(struct vpn_config *config)
 		goto err_tunnel;
 	}
 
-    if (manager_control_network_gate(&tunnel) != 0) {
-        ret = OFV_EXIT_CONFIG_FAILED;
-        goto err_tunnel;
-    }
+	if (manager_control_network_gate(&tunnel) != 0) {
+		ret = OFV_EXIT_CONFIG_FAILED;
+		goto err_tunnel;
+	}
 	// Step 4: run a pppd process
 	event_emit("state_change", "\"state\":\"creating_adapter\"");
 	log_debug("Establishing the tunnel\n");
@@ -1450,8 +1467,8 @@ err_start_tunnel:
 		ret = OFV_EXIT_TUNNEL_FAILED;
 	log_info("Terminated %s.\n", PPP_DAEMON);
 err_tunnel:
-    if (!tunnel.cleanup_attempted)
-        on_ppp_if_down(&tunnel);
+	if (!tunnel.cleanup_attempted)
+		on_ppp_if_down(&tunnel);
 	if (tunnel.cleanup_failed || tunnel.network_apply_failed)
 		ret = OFV_EXIT_CONFIG_FAILED;
 	if (ret != OFV_EXIT_OK)

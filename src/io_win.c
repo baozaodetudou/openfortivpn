@@ -108,7 +108,8 @@ static struct ppp_packet *pool_pop(struct ppp_packet_pool *pool)
 	struct ppp_packet *packet;
 
 	pthread_mutex_lock(&pool->mutex);
-	while (pool->list_head == NULL && !InterlockedCompareExchange(&shutting_down, 0, 0))
+	while (pool->list_head == NULL
+	       && !InterlockedCompareExchange(&shutting_down, 0, 0))
 		pthread_cond_wait(&pool->new_data, &pool->mutex);
 	if (InterlockedCompareExchange(&shutting_down, 0, 0)) {
 		pthread_mutex_unlock(&pool->mutex);
@@ -440,8 +441,10 @@ int io_loop(struct tunnel *tunnel)
 	int ret = 0;
 
 	struct ofv_thread_group workers = {0};
+
 	void *(*entries[])(void *) = {ssl_read_thread, ssl_write_thread,
-	                            tun_read_thread, tun_write_thread, if_config_thread};
+	                              tun_read_thread, tun_write_thread, if_config_thread
+	                             };
 
 	InterlockedExchange(&shutting_down, 0);
 
@@ -533,6 +536,7 @@ stop_workers:
 	}
 	if (tunnel->tun_session) {
 		struct wintun_api *api = (struct wintun_api *)tunnel->tun_adapter;
+
 		api->EndSession((WINTUN_SESSION_HANDLE)tunnel->tun_session);
 		tunnel->tun_session = NULL;
 	}

@@ -351,3 +351,25 @@ validation logs are preserved with a narrowly scoped whitespace attribute.
 Submission uses the existing `codex/reliability-control-plane` branch with a
 Chinese/English commit message. This authorization does not mark remaining
 T01–T24 work complete or authorize a release, signing or host installation.
+
+## Merge preparation — 2026-10-14
+
+The user requested merging the previously pushed checkpoint into `master`.
+The target still points at the original baseline and has no conflicting commits.
+Remote checks revealed OpenSSL/Windows header and pipe-read compatibility issues,
+a legacy OpenSSL version API call, mismatched Rust/JavaScript Tauri minor versions,
+and platform-sensitive generated newlines and mock JSON-array enumeration.
+The fixes retain the existing feature gates and runtime contracts. C formatting
+now follows the existing style checks; the kernel checker recognizes the OpenSSL
+context typedef and allows POSIX pthread positive errno contracts. Raw external
+validation artifacts retain their original endings.
+
+Full `scripts/verify-local.zsh` validation passed with the real PowerShell 7 mock
+matrix enabled. The desktop `tauri build --no-bundle --debug` and npm audit also
+passed (121 scanned packages, no advisories). Evidence is retained in
+`evidence/merge-local-20261014.log`, `evidence/merge-tauri-build-20261014.log`, and
+`evidence/merge-npm-audit-20261014.log`. Generated remote output also matches
+when the TypeScript system newline is set to CRLF. Windows PowerShell 5.1 and
+MinGW execution are left to the PR CI; the mock now enumerates JSON arrays
+explicitly and exposes diagnostic errors only for synthetic inputs. No host
+network changes, service installation, signed artifact or release is involved.

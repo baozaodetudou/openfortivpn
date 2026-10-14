@@ -24,7 +24,10 @@ public sealed class TestProperties : List<TestProperty> {
 '@
 function ReadRules {
     $text = [IO.File]::ReadAllText($env:OFV_NRPT_TEST_STATE)
-    return @(Microsoft.PowerShell.Utility\ConvertFrom-Json -InputObject $text)
+    # Windows PowerShell 5.1 emits a JSON array as one pipeline object;
+    # PowerShell 7 enumerates it. Explicit iteration handles both versions.
+    $rules = Microsoft.PowerShell.Utility\ConvertFrom-Json -InputObject $text
+    foreach ($rule in $rules) { $rule }
 }
 function WriteRules($rules) {
     $text = Microsoft.PowerShell.Utility\ConvertTo-Json -InputObject @($rules) -Depth 12 -Compress
@@ -90,7 +93,14 @@ def main():
         module.write_text(MOCK)
         script = root / "nrpt.ps1"
         quoted_module = str(module).replace("'", "''")
-        script.write_text(source_text.replace(imports, f"Microsoft.PowerShell.Core\\Import-Module '{quoted_module}' -ErrorAction Stop"))
+        test_source = source_text.replace(imports, f"Microsoft.PowerShell.Core\\Import-Module '{quoted_module}' -ErrorAction Stop")
+        # Only this synthetic fixture may expose exception details. Production
+        # keeps its fixed error envelope and never logs request/CIM contents.
+        test_source = test_source.replace(
+            "[Console]::Error.Write('NRPT operation failed')",
+            "[Console]::Error.Write(($_ | Microsoft.PowerShell.Utility\\Out-String))",
+        )
+        script.write_text(test_source)
         state = root / "state.json"
         state.write_text("[]")
         env = os.environ.copy()

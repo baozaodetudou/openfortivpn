@@ -194,7 +194,7 @@ static int ipv4_get_route(struct rtentry *route)
 				err = ERR_IPV4_SEE_ERRNO;
 				goto cleanup;
 			}
-			buffer[buffer_size-1] = '\0';
+			buffer[buffer_size - 1] = '\0';
 		}
 	}
 
@@ -449,7 +449,7 @@ cleanup:
 				strcpy(tmp_ip_string, strtok_r(tmpstr, "/", &saveptr3));
 				mask = strtoul(saveptr3, NULL, 10);
 				// convert from CIDR to ipv4 mask
-				mask = 0xffffffff << (32-mask);
+				mask = 0xffffffff << (32 - mask);
 
 				is_mask_set = 1;
 			} else if (inet_aton(tmpstr, &dstaddr)) {
@@ -476,7 +476,7 @@ cleanup:
 
 			if (!is_mask_set) {
 				// convert from CIDR to ipv4 mask
-				mask = 0xffffffff << (32-((dot_count + 1) * 8));
+				mask = 0xffffffff << (32 - ((dot_count + 1) * 8));
 			}
 			// convert mask to reversed byte order
 			mask = ((mask & 0xff000000) >> 24)
@@ -871,7 +871,8 @@ static void add_text_route(struct tunnel *tunnel, const char *dest,
 }
 #endif
 
-int ipv4_add_split_vpn_route(struct tunnel *tunnel, char *dest, char *mask,
+int ipv4_add_split_vpn_route(struct tunnel *tunnel, char *dest,
+                             char *mask,
                              char *gateway)
 {
 	struct rtentry *route;
@@ -930,7 +931,8 @@ static int ipv4_set_split_routes(struct tunnel *tunnel)
 
 		route = &tunnel->ipv4.split_rt[i];
 		// check if the route to be added is not the one to the gateway itself
-		if (route_dest(route).s_addr == route_dest(&tunnel->ipv4.gtw_rt).s_addr) {
+		if (route_dest(route).s_addr == route_dest(
+		            &tunnel->ipv4.gtw_rt).s_addr) {
 			log_debug("Skipping route to tunnel gateway (%s).\n",
 			          ipv4_show_route(route));
 			continue;
@@ -950,9 +952,10 @@ static int ipv4_set_split_routes(struct tunnel *tunnel)
 		if (ret == ERR_IPV4_SEE_ERRNO && errno == EEXIST)
 			log_info("Route to gateway exists already.\n");
 		else if (ret != 0) {
-            log_warn("Could not set route to tunnel gateway (%s).\n", err_ipv4_str(ret));
-            return ret;
-        }
+			log_warn("Could not set route to tunnel gateway (%s).\n",
+			         err_ipv4_str(ret));
+			return ret;
+		}
 	}
 	return 0;
 }
@@ -1064,24 +1067,24 @@ int ipv4_restore_routes(struct tunnel *tunnel)
 
 		ret = ipv4_del_route(gtw_rt);
 		if (ret != 0) {
-            failed = 1;
+			failed = 1;
 			log_warn("Could not delete route to vpn server (%s).\n",
 			         err_ipv4_str(ret));
-        }
+		}
 		if ((cfg->half_internet_routes == 0) &&
 		    (tunnel->ipv4.split_routes == 0)) {
 			ret = ipv4_del_route(ppp_rt);
 			if (ret != 0) {
-                failed = 1;
+				failed = 1;
 				log_warn("Could not delete route through tunnel (%s).\n",
 				         err_ipv4_str(ret));
-            }
+			}
 
 			// Restore the default route. It seems not to be
 			// automatically restored on all linux distributions
 			ret = ipv4_set_route(def_rt);
 			if (ret != 0) {
-                failed = 1;
+				failed = 1;
 				log_warn("Could not restore default route (%s). Already restored?\n",
 				         err_ipv4_str(ret));
 			}
@@ -1226,10 +1229,14 @@ int ipv4_add_nameservers_to_resolv_conf(struct tunnel *tunnel)
 #if HAVE_RESOLVCONF
 	if (use_resolvconf == 0) {
 #endif
-        if (dns_suffix[0] == '\0') tunnel->ipv4.dns_suffix_was_there = -1;
-        if (dns_line_present(buffer, ns1)) tunnel->ipv4.ns1_was_there = 1;
-        if (dns_line_present(buffer, ns2)) tunnel->ipv4.ns2_was_there = 1;
-        if (dns_line_present(buffer, dns_suffix)) tunnel->ipv4.dns_suffix_was_there = 1;
+		if (dns_suffix[0] == '\0')
+			tunnel->ipv4.dns_suffix_was_there = -1;
+		if (dns_line_present(buffer, ns1))
+			tunnel->ipv4.ns1_was_there = 1;
+		if (dns_line_present(buffer, ns2))
+			tunnel->ipv4.ns2_was_there = 1;
+		if (dns_line_present(buffer, dns_suffix))
+			tunnel->ipv4.dns_suffix_was_there = 1;
 
 		rewind(file);
 		if (fread(buffer, 1, stat.st_size, file) != (size_t)stat.st_size) {
@@ -1270,15 +1277,16 @@ err_close:
 	if (use_resolvconf == 0) {
 #endif
 		if (fclose(file)) {
-            log_warn("Could not close /etc/resolv.conf: %s\n", strerror(errno));
-            ret = -1;
-        }
+			log_warn("Could not close /etc/resolv.conf: %s\n",
+			         strerror(errno));
+			ret = -1;
+		}
 #if HAVE_RESOLVCONF
 	} else {
 		if (pclose(file) != 0) {
-            log_warn("resolvconf failed.\n");
-            ret = -1;
-        }
+			log_warn("resolvconf failed.\n");
+			ret = -1;
+		}
 	}
 #endif
 
@@ -1369,7 +1377,8 @@ int ipv4_del_nameservers_from_resolv_conf(struct tunnel *tunnel)
 		strncat(ns2, inet_ntoa(tunnel->ipv4.ns2_addr), 15);
 	}
 	dns_suffix[0] = '\0';
-	if (tunnel->ipv4.dns_suffix != NULL && tunnel->ipv4.dns_suffix[0] != '\0') {
+	if (tunnel->ipv4.dns_suffix != NULL
+	    && tunnel->ipv4.dns_suffix[0] != '\0') {
 		strcpy(dns_suffix, "search ");
 		strncat(dns_suffix, tunnel->ipv4.dns_suffix, MAX_DOMAIN_LENGTH);
 	}

@@ -59,6 +59,7 @@ static inline void destroy_ppp_packet_pool(struct ppp_packet_pool *pool)
 {
 	while (pool->list_head) {
 		struct ppp_packet *packet = pool->list_head;
+
 		pool->list_head = packet->next;
 		free(packet);
 	}
@@ -72,9 +73,11 @@ static inline void ofv_pool_unlock(void *mutex)
 	pthread_mutex_unlock((pthread_mutex_t *)mutex);
 }
 
-static inline struct ppp_packet *ofv_pool_pop(struct ppp_packet_pool *pool)
+static inline struct ppp_packet *ofv_pool_pop(struct ppp_packet_pool
+                *pool)
 {
 	struct ppp_packet *first;
+
 	pthread_mutex_lock(&pool->mutex);
 	/* cond_wait reacquires the mutex before cancellation cleanup runs. */
 	pthread_cleanup_push(ofv_pool_unlock, &pool->mutex);

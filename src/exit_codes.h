@@ -39,21 +39,36 @@ enum ofv_exit_code {
 static inline const char *ofv_exit_reason(int code)
 {
 	switch (code) {
-	case OFV_EXIT_OK: return "OK";
-	case OFV_EXIT_DNS_FAILED: return "DNS_FAILED";
-	case OFV_EXIT_TCP_FAILED: return "TCP_FAILED";
-	case OFV_EXIT_TLS_FAILED: return "TLS_FAILED";
-	case OFV_EXIT_CERT_FAILED: return "CERT_FAILED";
-	case OFV_EXIT_AUTH_FAILED: return "AUTH_REJECTED";
-	case OFV_EXIT_OTP_MISSING: return "OTP_REQUIRED";
-	case OFV_EXIT_SAML_FAILED: return "SAML_FAILED";
-	case OFV_EXIT_ALLOC_DENIED: return "ALLOCATION_DENIED";
-	case OFV_EXIT_CONFIG_FAILED: return "CONFIG_FAILED";
-	case OFV_EXIT_ADAPTER_FAILED: return "ADAPTER_FAILED";
-	case OFV_EXIT_TUNNEL_FAILED: return "TUNNEL_FAILED";
-	case OFV_EXIT_PERMISSION: return "PERMISSION_REQUIRED";
-	case OFV_EXIT_SIGNAL: return "SIGNALLED";
-	default: return "INTERNAL_ERROR";
+	case OFV_EXIT_OK:
+		return "OK";
+	case OFV_EXIT_DNS_FAILED:
+		return "DNS_FAILED";
+	case OFV_EXIT_TCP_FAILED:
+		return "TCP_FAILED";
+	case OFV_EXIT_TLS_FAILED:
+		return "TLS_FAILED";
+	case OFV_EXIT_CERT_FAILED:
+		return "CERT_FAILED";
+	case OFV_EXIT_AUTH_FAILED:
+		return "AUTH_REJECTED";
+	case OFV_EXIT_OTP_MISSING:
+		return "OTP_REQUIRED";
+	case OFV_EXIT_SAML_FAILED:
+		return "SAML_FAILED";
+	case OFV_EXIT_ALLOC_DENIED:
+		return "ALLOCATION_DENIED";
+	case OFV_EXIT_CONFIG_FAILED:
+		return "CONFIG_FAILED";
+	case OFV_EXIT_ADAPTER_FAILED:
+		return "ADAPTER_FAILED";
+	case OFV_EXIT_TUNNEL_FAILED:
+		return "TUNNEL_FAILED";
+	case OFV_EXIT_PERMISSION:
+		return "PERMISSION_REQUIRED";
+	case OFV_EXIT_SIGNAL:
+		return "SIGNALLED";
+	default:
+		return "INTERNAL_ERROR";
 	}
 }
 

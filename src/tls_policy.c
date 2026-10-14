@@ -16,7 +16,8 @@ int tls_defer_verification(int preverify_ok, X509_STORE_CTX *context)
 	return 1;
 }
 
-int tls_certificate_policy(X509 *cert, long chain_result, const char *host,
+int tls_certificate_policy(X509 *cert, long chain_result,
+                           const char *host,
                            const struct x509_digest *pins,
                            char digest[SHA256STRLEN])
 {
@@ -40,7 +41,8 @@ int tls_certificate_policy(X509 *cert, long chain_result, const char *host,
 	}
 	if (chain_result == X509_V_OK && identity_ok)
 		return 0;
-	if (X509_digest(cert, EVP_sha256(), bytes, &length) != 1 || length != SHA256LEN)
+	if (X509_digest(cert, EVP_sha256(), bytes, &length) != 1
+	    || length != SHA256LEN)
 		return 1;
 	for (unsigned int i = 0; i < length; i++)
 		sprintf(digest + i * 2, "%02x", bytes[i]);

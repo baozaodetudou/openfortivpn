@@ -47,10 +47,12 @@ static const char http_response[] =
 /*
  * Parse SAML cookie and session ID from the HTTP GET request.
  */
-static int parse_saml_request(const char *request, size_t length, struct vpn_config *config)
+static int parse_saml_request(const char *request, size_t length,
+                              struct vpn_config *config)
 {
-    return saml_parse_request(request, length, config->saml_port,
-                              config->saml_session_id, sizeof(config->saml_session_id));
+	return saml_parse_request(request, length, config->saml_port,
+	                          config->saml_session_id,
+	                          sizeof(config->saml_session_id));
 }
 
 int wait_for_http_request(struct vpn_config *config)
@@ -63,8 +65,9 @@ int wait_for_http_request(struct vpn_config *config)
 	int opt = 1;
 	fd_set read_fds;
 	struct timeval timeout;
-    int remaining = 5;
-    config->saml_session_id[0] = 0;
+	int remaining = 5;
+
+	config->saml_session_id[0] = 0;
 
 	/* Create listening socket */
 	server_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -73,9 +76,10 @@ int wait_for_http_request(struct vpn_config *config)
 		return -1;
 	}
 
-    /* Prevent a second listener from intercepting the same callback port. */
+	/* Prevent a second listener from intercepting the same callback port. */
 	if (setsockopt(server_sock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
-	           (const char *)&opt, sizeof(opt)) != 0) goto cleanup;
+	               (const char *)&opt, sizeof(opt)) != 0)
+		goto cleanup;
 
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
@@ -115,54 +119,71 @@ int wait_for_http_request(struct vpn_config *config)
 			continue;
 		}
 
-        struct sockaddr_in peer;
-        int peer_length = sizeof(peer);
-		client_sock = accept(server_sock, (struct sockaddr *)&peer, &peer_length);
+		struct sockaddr_in peer;
+		int peer_length = sizeof(peer);
+
+		client_sock = accept(server_sock, (struct sockaddr *)&peer,
+		                     &peer_length);
 		if (client_sock == INVALID_SOCKET)
 			continue;
-        if ((ntohl(peer.sin_addr.s_addr) & 0xff000000u) != 0x7f000000u) {
-            closesocket(client_sock); client_sock = INVALID_SOCKET; continue;
-        }
-        DWORD socket_timeout = 2000;
-        if (setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO, (const char *)&socket_timeout, sizeof(socket_timeout)) != 0 ||
-            setsockopt(client_sock, SOL_SOCKET, SO_SNDTIMEO, (const char *)&socket_timeout, sizeof(socket_timeout)) != 0) goto cleanup;
+		if ((ntohl(peer.sin_addr.s_addr) & 0xff000000u) != 0x7f000000u) {
+			closesocket(client_sock);
+			client_sock = INVALID_SOCKET;
+			continue;
+		}
+		DWORD socket_timeout = 2000;
+
+		if (setsockopt(client_sock, SOL_SOCKET, SO_RCVTIMEO,
+		               (const char *)&socket_timeout,
+		               sizeof(socket_timeout)) != 0 ||
+		    setsockopt(client_sock, SOL_SOCKET, SO_SNDTIMEO,
+		               (const char *)&socket_timeout,
+		               sizeof(socket_timeout)) != 0)
+			goto cleanup;
 
 		/* Read HTTP request */
-        size_t used = 0;
-        ULONGLONG started = GetTickCount64();
-        while (used < OFV_SAML_REQUEST_LIMIT && GetTickCount64()-started < 2000) {
-            int bytes = recv(client_sock, buffer+used, (int)(OFV_SAML_REQUEST_LIMIT-used), 0);
-            if (bytes <= 0) break;
-            used += (size_t)bytes;
-            buffer[used] = 0;
-            if (memchr(buffer, 0, used) || strstr(buffer, "\r\n\r\n")) break;
-        }
+		size_t used = 0;
+		ULONGLONG started = GetTickCount64();
 
-        if (used > 0) {
+		while (used < OFV_SAML_REQUEST_LIMIT
+		       && GetTickCount64() - started < 2000) {
+			int bytes = recv(client_sock, buffer + used,
+			                 (int)(OFV_SAML_REQUEST_LIMIT - used), 0);
+
+			if (bytes <= 0)
+				break;
+			used += (size_t)bytes;
+			buffer[used] = 0;
+			if (memchr(buffer, 0, used) || strstr(buffer, "\r\n\r\n"))
+				break;
+		}
+
+		if (used > 0) {
 
 			/* Parse and extract cookie/session */
 			if (parse_saml_request(buffer, used, config) == 0) {
-                OPENSSL_cleanse(buffer, sizeof(buffer));
+				OPENSSL_cleanse(buffer, sizeof(buffer));
 				/* Send success response */
 				send(client_sock, http_response,
 				     (int)strlen(http_response), 0);
 				closesocket(client_sock);
-                client_sock = INVALID_SOCKET;
+				client_sock = INVALID_SOCKET;
 				ret = 0;
 				break;
 			}
 
-            static const char denied[] = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n";
-            send(client_sock, denied, (int)strlen(denied), 0);
+			static const char denied[] =
+			        "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n";
+			send(client_sock, denied, (int)strlen(denied), 0);
 		}
-        OPENSSL_cleanse(buffer, sizeof(buffer));
+		OPENSSL_cleanse(buffer, sizeof(buffer));
 
 		closesocket(client_sock);
 		client_sock = INVALID_SOCKET;
 	}
 
 cleanup:
-    OPENSSL_cleanse(buffer, sizeof(buffer));
+	OPENSSL_cleanse(buffer, sizeof(buffer));
 	if (client_sock != INVALID_SOCKET)
 		closesocket(client_sock);
 	if (server_sock != INVALID_SOCKET)

@@ -3,8 +3,10 @@
 #include <string.h>
 
 /* Non-destructive comparison: every server/domain uses the complete source,
- * so checking one entry cannot consume the lines needed by the next entry. */
-static inline int dns_line_present(const char *contents, const char *expected)
+ * so checking one entry cannot consume the lines needed by the next entry.
+ */
+static inline int dns_line_present(const char *contents,
+                                   const char *expected)
 {
 	size_t expected_len = strlen(expected);
 

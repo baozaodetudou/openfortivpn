@@ -74,7 +74,8 @@ typedef sem_t os_semaphore_t;
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 static pthread_mutex_t *lockarray;
 
-static void lock_callback(int mode, int type, const char *file, int line)
+static void lock_callback(int mode, int type, const char *file,
+                          int line)
 {
 	if (mode & CRYPTO_LOCK)
 		pthread_mutex_lock(&lockarray[type]);
@@ -116,7 +117,8 @@ static void destroy_ssl_locks(void)
 #endif
 
 // global variable to pass signal out of its handler
-volatile sig_atomic_t sig_received; //static variables are initialized to zero in C99
+volatile sig_atomic_t
+sig_received; //static variables are initialized to zero in C99
 
 int get_sig_received(void)
 {
@@ -134,7 +136,8 @@ int get_sig_received(void)
  * your perspective! You don't know when it will be really released by the
  * thread which pool_pop it in parallel.
  */
-static void pool_push(struct ppp_packet_pool *pool, struct ppp_packet *new)
+static void pool_push(struct ppp_packet_pool *pool,
+                      struct ppp_packet *new)
 {
 	struct ppp_packet *current;
 
@@ -399,7 +402,8 @@ static void debug_bad_packet(struct tunnel *tunnel, uint8_t *header)
 
 	memcpy(buffer, header, 6 * sizeof(uint8_t));
 
-	size = safe_ssl_read(tunnel->ssl_handle, &buffer[6], sizeof(buffer) - 6);
+	size = safe_ssl_read(tunnel->ssl_handle, &buffer[6],
+	                     sizeof(buffer) - 6);
 	if (size < 0)
 		return;
 	assert(size <= INT_MAX - 6);
@@ -485,7 +489,9 @@ static void *ssl_read(void *arg)
 
 		if (tunnel->state == STATE_CONNECTING) {
 			if (packet_is_ip_plus_dns(packet)) {
-				char line[ARRAY_SIZE("[xxx.xxx.xxx.xxx], ns [xxx.xxx.xxx.xxx, xxx.xxx.xxx.xxx], ns_suffix []") + MAX_DOMAIN_LENGTH];
+				char line[ARRAY_SIZE(
+				                  "[xxx.xxx.xxx.xxx], ns [xxx.xxx.xxx.xxx, xxx.xxx.xxx.xxx], ns_suffix []"
+				          ) + MAX_DOMAIN_LENGTH];
 
 				set_tunnel_ips(tunnel, packet);
 				strcpy(line, "[");
@@ -612,7 +618,10 @@ int io_loop(struct tunnel *tunnel)
 	int fatal = 0;		// indicate a fatal error during pthread_* calls
 
 	struct ofv_thread_group workers = {0};
-	void *(*entries[])(void *) = {pppd_read, pppd_write, ssl_read, ssl_write, if_config};
+
+	void *(*entries[])(void *) = {
+		pppd_read, pppd_write, ssl_read, ssl_write, if_config
+	};
 #if !HAVE_MACH_MACH_H
 	sigset_t sigset, oldset;
 	int mask_changed = 0;

@@ -1,2 +1,5 @@
 # Preserve raw validation output while keeping source whitespace checks enabled.
 .codex-tasks/reliability-control-plane/evidence/**/*.log -whitespace
+
+# Generated output must compare byte-for-byte on Windows as well as Unix.
+web/remote-client.js text eol=lf

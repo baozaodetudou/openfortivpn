@@ -46,10 +46,11 @@ void event_emit(const char *type, const char *json_fields_fmt, ...)
 
 	pthread_mutex_lock(&event_mutex);
 
-	fprintf(stderr, "{\"protocolVersion\":2,\"event\":\"%s\",\"ts\":%lld,\"seq\":%lld",
+	fprintf(stderr,
+	        "{\"protocolVersion\":2,\"event\":\"%s\",\"ts\":%lld,\"seq\":%lld",
 	        type, (long long)time(NULL), (long long)seq_counter++);
-    if (manager_control_enabled())
-        fprintf(stderr, ",\"attemptId\":\"%s\"", manager_control_attempt());
+	if (manager_control_enabled())
+		fprintf(stderr, ",\"attemptId\":\"%s\"", manager_control_attempt());
 
 	if (json_fields_fmt && json_fields_fmt[0] != '\0') {
 		va_start(ap, json_fields_fmt);

@@ -43,6 +43,7 @@ int main(void)
 {
 	for (failure_at = 0; failure_at <= 5; failure_at++) {
 		struct ofv_thread_group group = {0};
+
 		attempts = 0;
 		for (int i = 0; i < 5; i++)
 			if (ofv_thread_start(&group, worker, NULL, create_worker))
@@ -58,8 +59,10 @@ int main(void)
 	{
 		struct ppp_packet_pool pool;
 		struct ofv_thread_group group = {0};
+
 		init_ppp_packet_pool(&pool);
-		assert(ofv_thread_start(&group, pool_waiter, &pool, pthread_create) == 0);
+		assert(ofv_thread_start(&group, pool_waiter, &pool,
+		                        pthread_create) == 0);
 		usleep(10000);
 		assert(ofv_thread_join(&group, 1) == 0);
 		assert(pthread_mutex_trylock(&pool.mutex) == 0);
