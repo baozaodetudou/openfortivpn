@@ -80,8 +80,8 @@ if (values.platform.startsWith('macOS')) {
 } else if (values.platform === 'Windows-x64') {
   const payloads = [values.manager, values.engine, ...runtime.map(item => path.join(path.dirname(values.engine), item.name)), ...installers];
   const signatures = payloads.map(file => {
-    const script = `(Get-AuthenticodeSignature -LiteralPath '${path.resolve(file).replaceAll("'", "''")}').Status.ToString()`;
-    return run('powershell.exe', ['-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]).trim();
+    const script = `$ErrorActionPreference = 'Stop'; (Get-AuthenticodeSignature -LiteralPath '${path.resolve(file).replaceAll("'", "''")}').Status.ToString()`;
+    return run('pwsh.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]).trim();
   });
   signing = signatures.every(status => status === 'Valid') ? 'authenticode' : 'unsigned';
 } else signing = 'checksums-only';
