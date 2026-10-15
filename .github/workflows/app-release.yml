@@ -598,41 +598,10 @@ jobs:
 
       - name: Create tar and Debian packages
         run: |
-          version=$(awk -F'"' '/^version = "/ { print $2; exit }' headless/Cargo.toml)
-          test -n "$version"
-          artifact_dir="$GITHUB_WORKSPACE/headless-dist"
-          archive_root="$artifact_dir/openfortivpn-manager-headless-linux-x86_64"
-          deb_root="$RUNNER_TEMP/openfortivpn-manager-headless_${version}_amd64"
-          mkdir -p "$archive_root/bin" "$archive_root/libexec" "$archive_root/examples"
-          install -m 0755 headless/target/release/openfortivpn-manager-headless \
-            "$archive_root/bin/openfortivpn-manager-headless"
-          install -m 0755 build/headless-release/openfortivpn \
-            "$archive_root/libexec/openfortivpn"
-          install -m 0755 headless/scripts/install-bundle.sh "$archive_root/install.sh"
-          install -m 0644 headless/README.md "$archive_root/README.md"
-          cp -a headless/examples/. "$archive_root/examples/"
-          tar -C "$artifact_dir" -czf \
-            "$artifact_dir/openfortivpn-manager-headless_${version}_linux_x86_64.tar.gz" \
-            "$(basename "$archive_root")"
-
-          mkdir -p "$deb_root/DEBIAN" \
-            "$deb_root/usr/local/sbin" \
-            "$deb_root/usr/local/libexec/openfortivpn-manager-headless" \
-            "$deb_root/usr/share/doc/openfortivpn-manager-headless/examples"
-          sed "s/^Version:.*/Version: $version/" headless/packaging/debian/control \
-            > "$deb_root/DEBIAN/control"
-          install -m 0755 headless/packaging/debian/postinst "$deb_root/DEBIAN/postinst"
-          install -m 0755 headless/packaging/debian/prerm "$deb_root/DEBIAN/prerm"
-          install -m 0755 headless/target/release/openfortivpn-manager-headless \
-            "$deb_root/usr/local/sbin/openfortivpn-manager-headless"
-          install -m 0755 build/headless-release/openfortivpn \
-            "$deb_root/usr/local/libexec/openfortivpn-manager-headless/openfortivpn"
-          install -m 0644 headless/README.md \
-            "$deb_root/usr/share/doc/openfortivpn-manager-headless/README.md"
-          cp -a headless/examples/. \
-            "$deb_root/usr/share/doc/openfortivpn-manager-headless/examples/"
-          dpkg-deb --build --root-owner-group "$deb_root" \
-            "$artifact_dir/openfortivpn-manager-headless_${version}_amd64.deb"
+          sh scripts/package-headless.sh \
+            headless/target/release/openfortivpn-manager-headless \
+            build/headless-release/openfortivpn \
+            headless-dist
 
       - name: Install and smoke-test headless Debian package
         run: |

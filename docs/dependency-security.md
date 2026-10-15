@@ -27,3 +27,8 @@ The latest continuation re-ran cargo-audit 0.22.2 against all four lockfiles:
 zero vulnerabilities, with the desktop warnings above still present. The
 installed npm graph contained 121 packages and no advisories. Retained JSON
 evidence is in `.codex-tasks/reliability-control-plane/evidence/`.
+
+The 2026-10-15 installer rebuild detected the newly published
+RUSTSEC-2026-0346/0347/0348/0349 advisories affecting rustls 0.23.45.
+All three shipped consumers now require 0.23.46 and their lockfiles use that
+patched version. No advisory was ignored or security check disabled.

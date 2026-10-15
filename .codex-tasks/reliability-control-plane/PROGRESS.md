@@ -382,3 +382,21 @@ reproduction, and the full local verification script passed after this change.
 Production launch/process behavior is unchanged. Dependency Review reports that
 the repository's Dependency graph feature is disabled; actual Rust and npm
 audits passed. No security feature was disabled or bypassed.
+
+## 2026-10-15 installer pipeline repair
+
+Desktop App Release runs 38522882919 and 38662053576 failed the Linux private
+pipe cancellation regression before packaging. Protected native apply now retries
+interrupted poll/read calls within the original deadline; authentication and
+lease admission remain interruptible. A synthetic SIGUSR1 regression fails with
+the original C implementation on macOS and passes with the repair. Full local
+verification and all nine Release CTests passed after the change. Release
+headless packaging now reuses scripts/package-headless.sh so its /usr/lib staging
+matches the current Debian postinst instead of the obsolete /usr/local payload.
+Platform packaging, signing and installation results remain subject to CI.
+
+PR #4 also detected four rustls advisories published on 2026-10-14
+(RUSTSEC-2026-0346/0347/0348/0349). The shared core pin, desktop/headless minimums
+and all three affected lockfiles now use 0.23.46. All four cargo-audit graphs
+and the full local verification script passed with this update; existing
+desktop upstream warnings remain visible.
