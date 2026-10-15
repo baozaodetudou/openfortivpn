@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
-import { walk } from './release-manifest.mjs';
+import { installersForPlatform, walk } from './release-manifest.mjs';
 
 const { values } = parseArgs({ options: {
   platform: { type: 'string' }, root: { type: 'string' }, engine: { type: 'string' },
@@ -68,7 +68,7 @@ const sbom = {
   dependencies: [...new Map([...metadata.resolve.nodes, ...(helperMetadata?.resolve.nodes ?? [])].map(node => [node.id, { ref: node.id, dependsOn: node.dependencies }])).values()],
 };
 let signing = 'unverified', notarization = 'not-run';
-const installers = walk(values.root).filter(file => /\.(deb|dmg|msi|exe|tar\.gz)$/.test(file) && !file.includes('.app' + path.sep));
+const installers = installersForPlatform(values.root, values.platform);
 if (values.platform.startsWith('macOS')) {
   if (!values['app-bundle']) throw new Error('--app-bundle is required for macOS');
   run('codesign', ['--verify', '--deep', '--strict', values['app-bundle']]);

@@ -400,3 +400,12 @@ PR #4 also detected four rustls advisories published on 2026-10-14
 and all three affected lockfiles now use 0.23.46. All four cargo-audit graphs
 and the full local verification script passed with this update; existing
 desktop upstream warnings remain visible.
+
+Installer smoke runs exposed two release-evidence defects: PowerShell 5 inherited
+PowerShell 7 module paths on Windows, and Linux desktop evidence included Tauri's
+internal control.tar.gz/data.tar.gz files that are not uploaded. Evidence now
+uses the runner's PowerShell 7 and platform-specific installer extensions. A
+Debian staging-layout regression fails with the old collector and passes with
+the fix. Full local verification passed. Manual release builds now verify the
+complete downloaded platform bundle, source commit, installer hashes and SBOMs
+before reporting success; tagged publication also depends on that verification.

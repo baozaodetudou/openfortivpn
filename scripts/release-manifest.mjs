@@ -18,6 +18,18 @@ export function walk(root) {
   });
 }
 
+export function installersForPlatform(root, platform) {
+  const extensions = {
+    'Linux-x64': ['.deb'],
+    'macOS-arm64': ['.dmg'],
+    'macOS-x86_64': ['.dmg'],
+    'Windows-x64': ['.msi', '.exe'],
+    'Linux-headless-x86_64': ['.deb', '.tar.gz'],
+  }[platform];
+  if (!extensions) throw new Error(`Unknown release platform: ${platform}`);
+  return walk(root).filter(file => extensions.some(extension => file.endsWith(extension)));
+}
+
 export function assemble(root, commit, evidence, acceptance, official = false) {
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('A full source commit is required');
   const names = new Set();

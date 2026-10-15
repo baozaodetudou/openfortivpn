@@ -648,12 +648,39 @@ jobs:
             headless-dist/sbom-*.cdx.json
           if-no-files-found: error
 
+  verify-bundles:
+    name: Verify complete platform bundle
+    needs: [bundle-unix, bundle-windows, bundle-headless-linux]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout release verification scripts
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify source, installer hashes and SBOMs
+        run: |
+          node scripts/release-manifest.mjs --root release-assets \
+            --commit "$GITHUB_SHA" --output "$RUNNER_TEMP/release-manifest.json"
+
   publish:
     name: Publish tagged desktop release
     permissions:
       contents: write
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [bundle-unix, bundle-windows, bundle-headless-linux]
+    needs: [bundle-unix, bundle-windows, bundle-headless-linux, verify-bundles]
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout release verification scripts
