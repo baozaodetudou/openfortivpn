@@ -180,11 +180,14 @@ static uint64_t monotonic_ms(void)
 }
 
 static int read_frame(char *line, size_t capacity,
-                      unsigned int timeout_ms)
+                      unsigned int timeout_ms, int retry_interrupted)
 {
 	uint64_t start = monotonic_ms();
 	size_t length = 0;
 
+#ifdef _WIN32
+	(void)retry_interrupted;
+#endif
 	if (start == UINT64_MAX)
 		return -1;
 #ifndef _WIN32
@@ -212,12 +215,21 @@ static int read_frame(char *line, size_t capacity,
 #else
 		struct pollfd pipe = { STDIN_FILENO, POLLIN, 0 };
 		int ready = poll(&pipe, 1, 25);
-		/* A signal interrupts the pending challenge instead of restarting it. */
+		/* glibc can interrupt poll for a deferred cancellation even while
+		 * cancellation is disabled. Finish protected transactions under the
+		 * original deadline; authentication remains interruptible.
+		 */
+		if (ready < 0 && errno == EINTR && retry_interrupted)
+			continue;
 		if (ready < 0)
 			return -1;
 		if (ready == 0)
 			continue;
-		if (read(STDIN_FILENO, &byte, 1) != 1)
+		ssize_t consumed = read(STDIN_FILENO, &byte, 1);
+
+		if (consumed < 0 && errno == EINTR && retry_interrupted)
+			continue;
+		if (consumed != 1)
 			return -1;
 #endif
 		if (byte == '\n') {
@@ -256,7 +268,7 @@ int manager_control_otp(const char *prompt, char *response,
 	event_emit("auth_challenge",
 	           "\"requestId\":\"%s\",\"kind\":\"otp\",\"prompt\":\"%s\",\"timeoutMs\":120000,\"maxResponseBytes\":%zu",
 	           id, escaped, capacity - 1);
-	if (read_frame(line, sizeof(line), 120000) == 0)
+	if (read_frame(line, sizeof(line), 120000, 0) == 0)
 		result = manager_control_decode(line, id, "auth_response", response,
 		                                capacity);
 	OPENSSL_cleanse(line, sizeof(line));
@@ -289,7 +301,7 @@ int manager_control_network_gate(struct tunnel *tunnel)
 #endif
 	           tunnel->config->set_routes ? "true" : "false",
 	           tunnel->config->set_dns ? "true" : "false");
-	result = read_frame(line, sizeof(line), 30000);
+	result = read_frame(line, sizeof(line), 30000, 0);
 	if (result == 0)
 		result = manager_control_decode(line, id, "lease_decision", answer,
 		                                sizeof(answer));
@@ -470,7 +482,7 @@ int manager_control_network_apply(struct tunnel *tunnel)
 		           id, count, tunnel->ppp_iface, servers, domains);
 	event_emit("network_commit", "\"requestId\":\"%s\",\"timeoutMs\":30000",
 	           id);
-	if (read_frame(line, sizeof(line), 30000) == 0 &&
+	if (read_frame(line, sizeof(line), 30000, 1) == 0 &&
 	    manager_control_decode(line, id, "network_result", answer,
 	                           sizeof(answer)) == 0
 	    && strcmp(answer, "applied") == 0)
@@ -508,7 +520,7 @@ int manager_control_network_release(struct tunnel *tunnel)
 			break;
 		unsigned int remaining = (unsigned int)(30000 - elapsed);
 
-		if (read_frame(line, sizeof(line), remaining) != 0)
+		if (read_frame(line, sizeof(line), remaining, 0) != 0)
 			break;
 		if (manager_control_decode(line, id, "network_result", answer,
 		                           sizeof(answer)) == 0) {

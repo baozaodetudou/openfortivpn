@@ -33,9 +33,10 @@ for (const scenario of ['otp', 'lease-grant', 'lease-deny', 'wrong-attempt', 'eo
 }
 process.stdout.write('Private pipe challenge/lease, denial, stale attempt, EOF and no-secret-output checks passed\n');
 if (process.platform !== 'win32') {
-  for (const scenario of ['native', 'native-cancel', 'native-deny', 'native-unsafe', 'native-proxy-route']) {
+  for (const scenario of ['native', 'native-cancel', 'native-interrupt', 'native-deny', 'native-unsafe', 'native-proxy-route']) {
     const unsafe = ['native-unsafe', 'native-proxy-route'].includes(scenario);
-    const child = spawn(executable, [unsafe || scenario === 'native-cancel' ? scenario : 'native'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const delayed = ['native-cancel', 'native-interrupt'].includes(scenario);
+    const child = spawn(executable, [unsafe || delayed ? scenario : 'native'], { stdio: ['pipe', 'pipe', 'pipe'] });
     const timer = setTimeout(() => child.kill(), 5000);
     let buffered = '', events = [];
     child.stderr.on('data', chunk => {
@@ -50,15 +51,15 @@ if (process.platform !== 'win32') {
         if (event.event === 'network_commit' || event.event === 'network_release') {
           const result = scenario === 'native-deny' ? 'deny' : event.event === 'network_commit' ? 'applied' : 'released';
           const reply = () => child.stdin.write(`OFV2 ${attempt} ${event.requestId} network_result ${Buffer.from(result).toString('base64')}\n`);
-          if (scenario === 'native-cancel' && event.event === 'network_commit') setTimeout(reply, 200);
+          if (delayed && event.event === 'network_commit') setTimeout(reply, 200);
           else reply();
         }
       }
     });
     const code = await new Promise((resolve, reject) => { child.on('error', reject); child.on('close', resolve); });
     clearTimeout(timer);
-    const successful = ['native', 'native-cancel'].includes(scenario);
-    assert.equal(code, successful ? 0 : 2);
+    const successful = ['native', 'native-cancel', 'native-interrupt'].includes(scenario);
+    assert.equal(code, successful ? 0 : 2, scenario);
     if (unsafe) assert.equal(events.length, 0, 'unsafe plan must emit no partial plan');
     else {
       assert.deepEqual(events.slice(0, 3).map(e => e.event), ['network_begin', 'network_resource', 'network_commit']);
@@ -66,7 +67,7 @@ if (process.platform !== 'win32') {
       assert.equal(events[0].binding.transportAddress, '127.0.0.1', 'bind actual TLS socket peer, including a proxy');
       assert.equal(events[1].ordinal, 0);
       assert.equal(events[1].resource.spec.destination, '10.0.0.0/8');
-      assert.equal(events[3].success, successful);
+      assert.equal(events[3].success, successful, scenario);
       if (successful) assert.equal(events[4].event, 'network_release');
     }
   }

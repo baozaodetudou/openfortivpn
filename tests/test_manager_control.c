@@ -10,10 +10,16 @@
 #include <pthread.h>
 #ifndef _WIN32
 #include <arpa/inet.h>
+#include <signal.h>
 #include <unistd.h>
 #endif
 
 #ifndef _WIN32
+static void interrupt_wait(int signal_number)
+{
+	(void)signal_number;
+}
+
 static void *apply_native(void *context)
 {
 	manager_control_network_apply(context);
@@ -56,6 +62,7 @@ int main(int argc, char **argv)
 		else if (strcmp(argv[1], "native") == 0
 		         || strcmp(argv[1], "native-unsafe") == 0
 		         || strcmp(argv[1], "native-proxy-route") == 0
+		         || strcmp(argv[1], "native-interrupt") == 0
 		         || strcmp(argv[1], "native-cancel") == 0) {
 			struct vpn_config config = {0};
 			struct tunnel tunnel = {0};
@@ -94,16 +101,26 @@ int main(int argc, char **argv)
 			                                      "native-proxy-route") == 0 ? "127.0.0.0" : "10.0.0.0");
 			route_mask(&route).s_addr = inet_addr(strcmp(argv[1],
 			                                      "native-unsafe") == 0 ? "0.0.0.0" : "255.0.0.0");
-			if (strcmp(argv[1], "native-cancel") == 0) {
+			if (strcmp(argv[1], "native-cancel") == 0
+			    || strcmp(argv[1], "native-interrupt") == 0) {
 				pthread_t worker;
 				void *exit_status;
+				int cancel = strcmp(argv[1], "native-cancel") == 0;
+				struct sigaction action = {0};
 
+				action.sa_handler = interrupt_wait;
+				assert(sigemptyset(&action.sa_mask) == 0);
+				assert(sigaction(SIGUSR1, &action, NULL) == 0);
 				assert(pthread_create(&worker, NULL, apply_native,
 				                      &tunnel) == 0);
 				usleep(50000);
-				assert(pthread_cancel(worker) == 0);
+				if (cancel)
+					assert(pthread_cancel(worker) == 0);
+				else
+					assert(pthread_kill(worker, SIGUSR1) == 0);
 				assert(pthread_join(worker, &exit_status) == 0
-				       && exit_status == PTHREAD_CANCELED);
+				       && exit_status == (cancel ?
+				                          PTHREAD_CANCELED : NULL));
 				result = 0;
 			} else
 				result = manager_control_network_apply(&tunnel);
