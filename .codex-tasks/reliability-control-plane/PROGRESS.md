@@ -394,3 +394,9 @@ verification and all nine Release CTests passed after the change. Release
 headless packaging now reuses scripts/package-headless.sh so its /usr/lib staging
 matches the current Debian postinst instead of the obsolete /usr/local payload.
 Platform packaging, signing and installation results remain subject to CI.
+
+PR #4 also detected four rustls advisories published on 2026-10-14
+(RUSTSEC-2026-0346/0347/0348/0349). The shared core pin, desktop/headless minimums
+and all three affected lockfiles now use 0.23.46. All four cargo-audit graphs
+and the full local verification script passed with this update; existing
+desktop upstream warnings remain visible.
