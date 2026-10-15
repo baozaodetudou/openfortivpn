@@ -38,7 +38,11 @@ const packages = cargoPackages.map(pkg => ({
   ...(pkg.license ? { licenses: [{ expression: pkg.license }] } : {}),
 }));
 if (!values.platform.includes('headless')) {
-  const trees = JSON.parse(run('corepack', ['pnpm', 'list', '--depth', 'Infinity', '--json'], { cwd: path.resolve(path.dirname(values.manifest), '..') }));
+  // Windows Corepack is a .cmd shim; execFile cannot launch it directly.
+  // Keep the shell command constant and pass the workspace only through cwd.
+  const trees = JSON.parse(process.platform === 'win32'
+    ? run('cmd.exe', ['/d', '/s', '/c', 'corepack pnpm list --depth Infinity --json'], { cwd: path.resolve(path.dirname(values.manifest), '..') })
+    : run('corepack', ['pnpm', 'list', '--depth', 'Infinity', '--json'], { cwd: path.resolve(path.dirname(values.manifest), '..') }));
   const npm = new Map();
   const visit = tree => {
     for (const group of ['dependencies', 'devDependencies', 'optionalDependencies']) {
