@@ -343,6 +343,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: openfortivpn-manager-${{ matrix.name }}
+          include-hidden-files: true
           path: |
             ${{ matrix.artifact_root }}/**/*.deb
             ${{ matrix.artifact_root }}/**/*.dmg
@@ -648,9 +649,32 @@ jobs:
             headless-dist/sbom-*.cdx.json
           if-no-files-found: error
 
+  verify-macos-artifacts:
+    name: Verify downloaded macOS app signatures
+    needs: [bundle-unix]
+    runs-on: macos-14
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        artifact: [openfortivpn-manager-macOS-arm64, openfortivpn-manager-macOS-x86_64]
+    steps:
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: downloaded
+
+      - name: Verify downloaded app signature
+        run: |
+          app=$(find downloaded -type d -name '*.app' -print -quit)
+          test -n "$app"
+          test -f "$app/Contents/Resources/bin/.gitkeep"
+          codesign --verify --deep --strict "$app"
+
   verify-bundles:
     name: Verify complete platform bundle
-    needs: [bundle-unix, bundle-windows, bundle-headless-linux]
+    needs: [bundle-unix, bundle-windows, bundle-headless-linux, verify-macos-artifacts]
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:

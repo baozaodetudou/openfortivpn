@@ -409,3 +409,10 @@ Debian staging-layout regression fails with the old collector and passes with
 the fix. Full local verification passed. Manual release builds now verify the
 complete downloaded platform bundle, source commit, installer hashes and SBOMs
 before reporting success; tagged publication also depends on that verification.
+
+The first post-release artifact inspection found the downloaded macOS `.app`
+missing `Contents/Resources/bin/.gitkeep`; GitHub artifact upload excludes hidden
+files by default, which invalidated the otherwise correctly signed bundle. The
+macOS upload now opts into hidden files, and a macOS runner downloads both
+architectures and reruns `codesign --verify --deep --strict` before the complete
+bundle gate can pass.
