@@ -676,7 +676,9 @@ err_tunnel:
 	log_info("Closed connection to gateway.\n");
 	tunnel.state = STATE_DOWN;
 
-	if (ssl_connect(&tunnel) == 0) {
+	if (tunnel.gateway_resolution_error) {
+		log_info("Skipped logout because gateway resolution failed.\n");
+	} else if (ssl_connect(&tunnel) == 0) {
 		auth_log_out(&tunnel);
 		log_info("Logged out.\n");
 	} else {
