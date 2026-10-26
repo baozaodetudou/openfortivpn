@@ -90,6 +90,7 @@ struct tunnel {
 	int manager_native_started;
 	char manager_native_request[33];
 	unsigned int manager_native_index;
+	const char *gateway_resolution_error;
 
 	int (*on_ppp_if_up)(struct tunnel *tunnel);
 	int (*on_ppp_if_down)(struct tunnel *tunnel);

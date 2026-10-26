@@ -1,6 +1,19 @@
 #ifndef OPENFORTIVPN_DNS_POLICY_H
 #define OPENFORTIVPN_DNS_POLICY_H
+#include <stddef.h>
 #include <string.h>
+
+/*
+ * RFC 2544 reserves 198.18.0.0/15 for network benchmark devices. Proxy
+ * clients and TUN DNS implementations commonly use this range for fake-IP
+ * answers. A VPN gateway resolved into this range is local interception
+ * state, not a routable gateway address.
+ */
+static inline int dns_ipv4_is_fake_ip(const unsigned char address[4])
+{
+	return address != NULL && address[0] == 198 &&
+	       (address[1] == 18 || address[1] == 19);
+}
 
 /* Non-destructive comparison: every server/domain uses the complete source,
  * so checking one entry cannot consume the lines needed by the next entry.

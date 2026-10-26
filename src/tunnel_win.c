@@ -31,6 +31,7 @@
 #include "manager_control.h"
 #include "tls_policy.h"
 #include "exit_codes.h"
+#include "dns_policy.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -406,6 +407,23 @@ static int get_gateway_host_ip(struct tunnel *tunnel)
 
 	tunnel->config->gateway_ip =
 	        ((struct sockaddr_in *)result->ai_addr)->sin_addr;
+	if (dns_ipv4_is_fake_ip((const unsigned char *)&tunnel->config->gateway_ip)) {
+		char ip_str[INET_ADDRSTRLEN];
+
+		inet_ntop(AF_INET, &tunnel->config->gateway_ip,
+		          ip_str, sizeof(ip_str));
+		log_error("Gateway host '%s' resolved to %s in the RFC 2544 "
+		          "benchmark range (198.18.0.0/15). This is usually a "
+		          "local Fake-IP/TUN DNS result; configure this domain to "
+		          "use real DNS.\n",
+		          tunnel->config->gateway_host, ip_str);
+		tunnel->gateway_resolution_error =
+		        "Gateway resolved to a local Fake-IP/TUN DNS address; "
+		        "disable Fake-IP or configure real DNS for this domain";
+		tunnel->config->gateway_ip.s_addr = 0;
+		freeaddrinfo(result);
+		return 1;
+	}
 	freeaddrinfo(result);
 
 	{
@@ -649,8 +667,12 @@ err_tunnel:
 		on_ppp_if_down(&tunnel);
 	if (tunnel.cleanup_failed || tunnel.network_apply_failed)
 		ret = OFV_EXIT_CONFIG_FAILED;
-	if (ret != OFV_EXIT_OK)
-		event_emit_error(ret, "engine", ofv_exit_reason(ret));
+	if (ret != OFV_EXIT_OK) {
+		if (ret == OFV_EXIT_DNS_FAILED && tunnel.gateway_resolution_error)
+			event_emit_error(ret, "dns", tunnel.gateway_resolution_error);
+		else
+			event_emit_error(ret, "engine", ofv_exit_reason(ret));
+	}
 	log_info("Closed connection to gateway.\n");
 	tunnel.state = STATE_DOWN;
 
