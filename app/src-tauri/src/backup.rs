@@ -153,6 +153,7 @@ mod tests {
             id: Uuid::new_v4().to_string(),
             name: "Synthetic".into(),
             host: "vpn.example".into(),
+            gateway_dns: "223.5.5.5".into(),
             port: 443,
             username: "user".into(),
             realm: String::new(),

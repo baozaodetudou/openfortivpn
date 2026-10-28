@@ -22,6 +22,7 @@ openfortivpn \- Client for PPP+TLS VPN tunnel services
 [\fB\-\-no\-routes\fR]
 [\fB\-\-set\-dns=\fI<bool>\fR]
 [\fB\-\-no\-dns\fR]
+[\fB\-\-gateway\-dns=\fI<IPv4>\fR]
 [\fB\-\-half\-internet\-routes=\fI<bool>\fR]
 [\fB\-\-ca\-file=\fI<file>\fR]
 [\fB\-\-user\-cert=\fI<file>\fR]
@@ -68,6 +69,14 @@ Show version and exit.
 .TP
 \fB\-c \fI<file>\fR, \fB\-\-config=\fI<file>\fR
 Specify a custom configuration file (default: @SYSCONFDIR@/openfortivpn/config).
+.TP
+\fB\-\-gateway\-dns=\fI<IPv4>\fR
+Resolve only the VPN gateway using the specified IPv4 DNS server over TCP port 53
+(for example, 223.5.5.5). The default uses system DNS. An explicit resolver has
+a five-second query deadline and never falls back to system DNS on failure.
+The original gateway hostname remains the TLS SNI and certificate identity.
+This does not change system DNS or bypass TUN routing; use enterprise DNS for
+private gateway names. TCP DNS is not encrypted.
 .TP
 \fB\-u \fI<user>\fR, \fB\-\-username=\fI<user>\fR
 VPN account username.

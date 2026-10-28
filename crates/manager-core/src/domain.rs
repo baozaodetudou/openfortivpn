@@ -16,6 +16,9 @@ pub struct VpnProfile {
     pub revision: u64,
     pub name: String,
     pub host: String,
+    /// Empty uses system DNS. Otherwise query this IPv4 resolver over TCP 53.
+    #[serde(default)]
+    pub gateway_dns: String,
     #[serde(default = "default_port")]
     pub port: u16,
     #[serde(default)]

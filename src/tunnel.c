@@ -34,6 +34,7 @@
 #include "http.h"
 #include "log.h"
 #include "dns_policy.h"
+#include "gateway_dns.h"
 #include "userinput.h"
 
 #include <openssl/err.h>
@@ -673,41 +674,24 @@ int ppp_interface_is_up(struct tunnel *tunnel)
 
 static int get_gateway_host_ip(struct tunnel *tunnel)
 {
-	const struct addrinfo hints = { .ai_family = AF_INET };
-	struct addrinfo *result = NULL;
+	struct vpn_config *cfg = tunnel->config;
+	char ip[INET_ADDRSTRLEN];
 
-	int ret = getaddrinfo(tunnel->config->gateway_host, NULL, &hints,
-	                      &result);
-
-	if (ret) {
-		if (ret == EAI_SYSTEM)
-			log_error("getaddrinfo: %s\n", strerror(errno));
-		else
-			log_error("getaddrinfo: %s\n", gai_strerror(ret));
+	tunnel->gateway_resolution_error = gateway_dns_resolve(
+	        cfg->gateway_host, cfg->gateway_dns, &cfg->gateway_ip);
+	if (tunnel->gateway_resolution_error) {
+		log_error("%s (resolver: %s).\n", tunnel->gateway_resolution_error,
+		          cfg->gateway_dns[0] ? cfg->gateway_dns : "system");
 		return 1;
 	}
-
-	tunnel->config->gateway_ip = ((struct sockaddr_in *)
-	                              result->ai_addr)->sin_addr;
-	if (dns_ipv4_is_fake_ip((const unsigned char *)&tunnel->config->gateway_ip)) {
-		char ip_str[INET_ADDRSTRLEN];
-
-		inet_ntop(AF_INET, &tunnel->config->gateway_ip,
-		          ip_str, sizeof(ip_str));
-		log_error("Gateway host '%s' resolved to %s in the RFC 2544 "
-		          "benchmark range (198.18.0.0/15). This is usually a "
-		          "local Fake-IP/TUN DNS result; configure this domain to "
-		          "use real DNS.\n",
-		          tunnel->config->gateway_host, ip_str);
-		tunnel->gateway_resolution_error =
-		        "Gateway resolved to a local Fake-IP/TUN DNS address; "
-		        "disable Fake-IP or configure real DNS for this domain";
-		freeaddrinfo(result);
-		return 1;
-	}
-	freeaddrinfo(result);
-
-	setenv("VPN_GATEWAY", inet_ntoa(tunnel->config->gateway_ip), 0);
+	inet_ntop(AF_INET, &cfg->gateway_ip, ip, sizeof(ip));
+	log_info("Gateway IP: %s (resolver: %s).\n", ip,
+	         cfg->gateway_dns[0] ? cfg->gateway_dns : "system");
+	if (dns_ipv4_is_fake_ip((const unsigned char *)&cfg->gateway_ip))
+		log_warn("Gateway uses benchmark/Fake-IP range 198.18.0.0/15; "
+		         "if TLS fails, check proxy/TUN rules or set gateway-dns.\n");
+	event_emit("gateway_resolved", "\"ip\":\"%s\"", ip);
+	setenv("VPN_GATEWAY", ip, 0);
 
 	return 0;
 }
@@ -1333,7 +1317,7 @@ int ssl_connect(struct tunnel *tunnel)
 	// Initiate SSL handshake
 	if (SSL_connect(tunnel->ssl_handle) != 1) {
 		log_error("SSL_connect: %s\n"
-		          "You might want to try --insecure-ssl or specify a different --cipher-list\n",
+		          "Check gateway reachability, proxy/TUN rules and server TLS settings.\n",
 		          ERR_error_string(ERR_peek_last_error(), NULL));
 		goto err_ssl_handle;
 	}

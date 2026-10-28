@@ -53,6 +53,22 @@ pub fn certificate_pin(value: &str) -> Result<String, ControlError> {
     Ok(value.to_ascii_lowercase())
 }
 
+pub fn gateway_dns(value: &str) -> Result<(), ControlError> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    if value.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| {
+        let first = ip.octets()[0];
+        first != 0 && first < 224
+    }) {
+        return Ok(());
+    }
+    Err(ControlError::new(
+        ErrorCode::InvalidInput,
+        "网关 DNS 必须是 IPv4 地址，例如 223.5.5.5；留空使用系统 DNS",
+    ))
+}
+
 pub fn profile(profile: &crate::domain::VpnProfile) -> Result<(), ControlError> {
     if profile.id.trim().is_empty()
         || profile.name.trim().is_empty()
@@ -70,6 +86,7 @@ pub fn profile(profile: &crate::domain::VpnProfile) -> Result<(), ControlError> 
     line("id", &profile.id)?;
     line("name", &profile.name)?;
     engine_field("host", &profile.host, HOST_MAX_BYTES)?;
+    gateway_dns(&profile.gateway_dns)?;
     engine_field("username", &profile.username, USERNAME_MAX_BYTES)?;
     engine_field("realm", &profile.realm, REALM_MAX_BYTES)?;
     certificate_pin(&profile.trusted_cert)?;
@@ -94,6 +111,40 @@ mod tests {
     fn normalizes_pins() {
         assert_eq!(certificate_pin(&"AB".repeat(32)).unwrap(), "ab".repeat(32));
         assert!(certificate_pin(&"ab".repeat(31)).is_err());
+    }
+
+    #[test]
+    fn explicit_gateway_dns_is_optional_validated_and_survives_serialization() {
+        let mut value: crate::domain::VpnProfile = serde_json::from_value(serde_json::json!({
+            "id":"synthetic", "name":"Office", "host":"vpn.example.test",
+        }))
+        .unwrap();
+        assert!(value.gateway_dns.is_empty());
+        for dns in [
+            "",
+            "223.5.5.5",
+            "114.114.114.114",
+            "192.168.1.1",
+            "127.0.0.1",
+        ] {
+            value.gateway_dns = dns.into();
+            assert!(profile(&value).is_ok());
+            let copy: crate::domain::VpnProfile =
+                serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
+            assert_eq!(copy.gateway_dns, dns);
+        }
+        for dns in [
+            "0.0.0.0",
+            "224.0.0.1",
+            "255.255.255.255",
+            "::1",
+            "dns.test",
+            "1.1.1.1\npassword=x",
+            " 223.5.5.5",
+        ] {
+            value.gateway_dns = dns.into();
+            assert!(profile(&value).is_err(), "{dns}");
+        }
     }
     #[test]
     fn catalog_ids_and_names_have_one_bounded_policy_for_every_adapter() {
