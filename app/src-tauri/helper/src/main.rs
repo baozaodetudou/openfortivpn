@@ -367,6 +367,13 @@ fn validate_config_contents(contents: &str) -> Result<(), String> {
         }
         match key {
             "host" | "username" | "password" | "realm" => {}
+            "gateway-dns" => {
+                if value.is_empty() {
+                    return Err("网关 DNS 不能为空；使用系统 DNS 时应省略该字段".into());
+                }
+                openfortivpn_manager_core::validation::gateway_dns(value)
+                    .map_err(|error| error.to_string())?;
+            }
             "port" => {
                 let port = value
                     .parse::<u16>()
@@ -1096,6 +1103,15 @@ fn run_engine(
     }
     let _config_cleanup = ConfigCleanup(protected_config.clone());
     let mut command = Command::new(ENGINE_PATH);
+    // An older engine must reject an explicit resolver rather than silently
+    // ignoring an unknown configuration key and using system DNS.
+    for line in contents.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim() == "gateway-dns" {
+                command.arg(format!("--gateway-dns={}", value.trim()));
+            }
+        }
+    }
     if let Some(attempt) = attempt {
         // No administrative command is accepted on this pipe. The fixed engine
         // validates OFV2 attempt, outstanding nonce, action, bounds and deadline.
@@ -1752,6 +1768,22 @@ mod tests {
     fn accepts_only_manager_generated_fields() {
         let config = "host = vpn.example.test\nport = 443\nusername = user\npassword = secret\nset-routes = 1\nset-dns = 0\npppd-use-peerdns = 0\nhalf-internet-routes = 1\n";
         assert!(validate_config_contents(config).is_ok());
+    }
+
+    #[test]
+    fn gateway_dns_accepts_only_a_numeric_resolver() {
+        for dns in ["223.5.5.5", "114.114.114.114", "127.0.0.1"] {
+            assert!(validate_config_contents(&format!(
+                "host = vpn.example.test\nport = 443\ngateway-dns = {dns}\n"
+            ))
+            .is_ok());
+        }
+        for dns in ["", "0.0.0.0", "224.0.0.1", "dns.test", "1.1.1.1:53", "::1"] {
+            assert!(validate_config_contents(&format!(
+                "host = vpn.example.test\nport = 443\ngateway-dns = {dns}\n"
+            ))
+            .is_err());
+        }
     }
 
     #[test]

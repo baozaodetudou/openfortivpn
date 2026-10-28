@@ -32,6 +32,7 @@
 #include "tls_policy.h"
 #include "exit_codes.h"
 #include "dns_policy.h"
+#include "gateway_dns.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -387,53 +388,24 @@ static void ssl_disconnect(struct tunnel *tunnel)
  */
 static int get_gateway_host_ip(struct tunnel *tunnel)
 {
-	struct addrinfo hints, *result = NULL;
-	int ret;
+	struct vpn_config *cfg = tunnel->config;
+	char ip[INET_ADDRSTRLEN];
 
-	if (tunnel->config->gateway_ip.s_addr != 0)
-		return 0;
-
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_INET;
-
-	ret = getaddrinfo(tunnel->config->gateway_host, NULL, &hints, &result);
-	if (ret != 0 || !result) {
-		log_error("Could not resolve host: %s\n",
-		          tunnel->config->gateway_host);
-		event_emit_error(OFV_EXIT_DNS_FAILED, "dns",
-		                 "Could not resolve host");
+	/* Re-resolve every attempt: a stale fake-IP must not survive reconnects. */
+	tunnel->gateway_resolution_error = gateway_dns_resolve(
+	        cfg->gateway_host, cfg->gateway_dns, &cfg->gateway_ip);
+	if (tunnel->gateway_resolution_error) {
+		log_error("%s (resolver: %s).\n", tunnel->gateway_resolution_error,
+		          cfg->gateway_dns[0] ? cfg->gateway_dns : "system");
 		return 1;
 	}
-
-	tunnel->config->gateway_ip =
-	        ((struct sockaddr_in *)result->ai_addr)->sin_addr;
-	if (dns_ipv4_is_fake_ip((const unsigned char *)&tunnel->config->gateway_ip)) {
-		char ip_str[INET_ADDRSTRLEN];
-
-		inet_ntop(AF_INET, &tunnel->config->gateway_ip,
-		          ip_str, sizeof(ip_str));
-		log_error("Gateway host '%s' resolved to %s in the RFC 2544 "
-		          "benchmark range (198.18.0.0/15). This is usually a "
-		          "local Fake-IP/TUN DNS result; configure this domain to "
-		          "use real DNS.\n",
-		          tunnel->config->gateway_host, ip_str);
-		tunnel->gateway_resolution_error =
-		        "Gateway resolved to a local Fake-IP/TUN DNS address; "
-		        "disable Fake-IP or configure real DNS for this domain";
-		tunnel->config->gateway_ip.s_addr = 0;
-		freeaddrinfo(result);
-		return 1;
-	}
-	freeaddrinfo(result);
-
-	{
-		char ip_str[INET_ADDRSTRLEN];
-
-		inet_ntop(AF_INET, &tunnel->config->gateway_ip,
-		          ip_str, sizeof(ip_str));
-		log_info("Gateway IP: %s\n", ip_str);
-		event_emit("gateway_resolved", "\"ip\":\"%s\"", ip_str);
-	}
+	inet_ntop(AF_INET, &cfg->gateway_ip, ip, sizeof(ip));
+	log_info("Gateway IP: %s (resolver: %s).\n", ip,
+	         cfg->gateway_dns[0] ? cfg->gateway_dns : "system");
+	if (dns_ipv4_is_fake_ip((const unsigned char *)&cfg->gateway_ip))
+		log_warn("Gateway uses benchmark/Fake-IP range 198.18.0.0/15; "
+		         "if TLS fails, check proxy/TUN rules or set gateway-dns.\n");
+	event_emit("gateway_resolved", "\"ip\":\"%s\"", ip);
 
 	return 0;
 }

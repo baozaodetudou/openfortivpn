@@ -1057,6 +1057,9 @@ impl VpnManager {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if !profile.gateway_dns.is_empty() {
+            command.arg(format!("--gateway-dns={}", profile.gateway_dns));
+        }
         if self.experimental_control {
             command
                 .arg("--manager-control")
@@ -2410,6 +2413,7 @@ while :; do sleep 0.05; done
             revision: 0,
             name: id.into(),
             host: "vpn.example.com".into(),
+            gateway_dns: String::new(),
             port: 443,
             username: "alice".into(),
             realm: String::new(),

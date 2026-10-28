@@ -64,6 +64,7 @@
     id: "",
     name: "",
     host: "",
+    gatewayDns: "",
     port: 443,
     username: "",
     realm: "",
