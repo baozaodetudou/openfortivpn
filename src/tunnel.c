@@ -678,7 +678,7 @@ static int get_gateway_host_ip(struct tunnel *tunnel)
 	char ip[INET_ADDRSTRLEN];
 
 	tunnel->gateway_resolution_error = gateway_dns_resolve(
-	        cfg->gateway_host, cfg->gateway_dns, &cfg->gateway_ip);
+	                cfg->gateway_host, cfg->gateway_dns, &cfg->gateway_ip);
 	if (tunnel->gateway_resolution_error) {
 		log_error("%s (resolver: %s).\n", tunnel->gateway_resolution_error,
 		          cfg->gateway_dns[0] ? cfg->gateway_dns : "system");

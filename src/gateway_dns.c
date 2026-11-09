@@ -73,7 +73,7 @@ static int wait_socket(dns_socket socket, int writing, uint64_t deadline)
 }
 
 static int transfer(dns_socket socket, unsigned char *buffer, size_t length,
-                     int writing, uint64_t deadline)
+                    int writing, uint64_t deadline)
 {
 	while (length) {
 		int result;
@@ -110,7 +110,7 @@ static int transfer(dns_socket socket, unsigned char *buffer, size_t length,
 
 /* Bounded compression traversal rejects pointer cycles and out-of-range labels. */
 static int read_name(const unsigned char *packet, size_t length, size_t *offset,
-                      char name[DNS_NAME_MAX])
+                     char name[DNS_NAME_MAX])
 {
 	size_t pos = *offset, output = 0;
 	int jumped = 0;
