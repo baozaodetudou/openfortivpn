@@ -114,7 +114,7 @@ jobs:
             bundle_root: src-tauri/target/release/bundle
             artifact_root: app/src-tauri/target/release/bundle
           - name: macOS-arm64
-            os: macos-14
+            os: macos-15
             bundles: app,dmg
             rust_target: aarch64-apple-darwin
             cmake_arch: arm64
@@ -652,7 +652,7 @@ jobs:
   verify-macos-artifacts:
     name: Verify downloaded macOS app signatures
     needs: [bundle-unix]
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
     strategy:
       fail-fast: false
