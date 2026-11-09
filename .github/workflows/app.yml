@@ -53,7 +53,7 @@ jobs:
           - name: Linux (Ubuntu 22.04)
             os: ubuntu-22.04
           - name: macOS
-            os: macos-14
+            os: macos-15
           - name: Windows
             os: windows-2022
 
