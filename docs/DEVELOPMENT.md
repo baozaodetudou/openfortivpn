@@ -1,5 +1,12 @@
 # Development and verification
 
+Gateway DNS transport tests require Python 3 and run as part of CTest. They use
+only loopback TCP peers and synthetic DNS records; no test changes host DNS or
+routes. `ctest --test-dir BUILD_DIR -R gateway_dns_transport --output-on-failure`
+checks compression, CNAME ownership, response identity, partial frames, deadlines
+and CLI validation. Real public-resolver probes and gateway handshakes are
+separate read-only diagnostics, not evidence of successful VPN authentication.
+
 The manager uses Rust, Tauri 2/Svelte 5, and the C openfortivpn engine. macOS development needs Xcode command-line tools, Rust, Node 22, Corepack/pnpm 10.24.0, CMake, pkg-config, and OpenSSL. Linux desktop additionally needs WebKitGTK/Tauri dependencies; headless has no WebView dependency. Windows needs the supported compiler/OpenSSL/Wintun distribution described in the release guide.
 
 Run `zsh scripts/verify-local.zsh` from the repository root. `VERIFY_SKIP_DESKTOP=1` skips the desktop on Linux servers without Tauri dependencies; this is a reduced check, not full validation. `VERIFY_C_BUILD_DIR` can select a CMake build directory. The script fails immediately when a check fails and does not install software or change network settings.

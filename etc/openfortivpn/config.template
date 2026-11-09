@@ -1,6 +1,8 @@
 ### configuration file for openfortivpn, see man openfortivpn(1) ###
 
 host = vpn.example.org
+# Optional: resolve only the VPN gateway using this IPv4 DNS server over TCP 53.
+# gateway-dns = 223.5.5.5
 port = 443
 username = vpnuser
 password = VPNpassw0rd

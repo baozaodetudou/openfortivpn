@@ -108,6 +108,7 @@ async fn real_time_lifecycle_and_log_stress() {
         id: "stress".into(),
         name: "Synthetic stress".into(),
         host: "vpn.example".into(),
+        gateway_dns: String::new(),
         port: 443,
         username: "synthetic".into(),
         realm: String::new(),

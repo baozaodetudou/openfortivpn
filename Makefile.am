@@ -5,6 +5,7 @@ openfortivpn_SOURCES = src/config.c src/config.h src/event.c src/event.h \
                        src/tls_policy.c src/tls_policy.h \
                        src/manager_control.c src/manager_control.h src/saml_policy.h \
                        src/dns_policy.h \
+                       src/gateway_dns.c src/gateway_dns.h \
                        src/thread_group.h \
 		       src/exit_codes.h src/hdlc.c src/hdlc.h \
 		       src/http.c src/http.h src/url.h src/io.c src/io.h \

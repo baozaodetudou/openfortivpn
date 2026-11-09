@@ -28,6 +28,7 @@
 
 #include "config.h"
 #include "log.h"
+#include "gateway_dns.h"
 
 #include <openssl/x509.h>  /* work around OpenSSL bug: missing definition of STACK_OF */
 #include <openssl/tls1.h>
@@ -244,6 +245,13 @@ int load_config(struct vpn_config *cfg, const char *filename)
 		if (strcmp(key, "host") == 0) {
 			strncpy(cfg->gateway_host, val, GATEWAY_HOST_SIZE);
 			cfg->gateway_host[GATEWAY_HOST_SIZE] = '\0';
+		} else if (strcmp(key, "gateway-dns") == 0) {
+			if (!gateway_dns_server_valid(val)) {
+				log_error("gateway-dns must be a unicast IPv4 address.\n");
+				ret = -EINVAL;
+				goto err_free;
+			}
+			strcpy(cfg->gateway_dns, val);
 		} else if (strcmp(key, "port") == 0) {
 			long port = strtol(val, NULL, 0);
 
@@ -526,6 +534,8 @@ void merge_config(struct vpn_config *dst, struct vpn_config *src)
 {
 	if (src->gateway_host[0])
 		strcpy(dst->gateway_host, src->gateway_host);
+	if (src->gateway_dns[0])
+		strcpy(dst->gateway_dns, src->gateway_dns);
 	if (src->gateway_port != invalid_cfg.gateway_port)
 		dst->gateway_port = src->gateway_port;
 	if (src->username[0])

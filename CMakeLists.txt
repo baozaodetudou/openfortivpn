@@ -13,6 +13,7 @@ find_package(OpenSSL REQUIRED)
 
 # Common sources (platform-independent)
 set(COMMON_SOURCES
+    src/gateway_dns.c
     src/tls_policy.c
     src/config.c
     src/event.c
@@ -305,6 +306,14 @@ if(BUILD_TESTING)
     add_executable(test_dns_policy tests/test_dns_policy.c)
     target_include_directories(test_dns_policy PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME dns_existing_entries COMMAND test_dns_policy)
+    add_executable(test_gateway_dns tests/test_gateway_dns.c src/gateway_dns.c)
+    target_include_directories(test_gateway_dns PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(test_gateway_dns OpenSSL::Crypto ${PLATFORM_LIBS})
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(NAME gateway_dns_transport COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_SOURCE_DIR}/tests/gateway-dns.py $<TARGET_FILE:test_gateway_dns>
+        $<TARGET_FILE:openfortivpn>)
+    set_tests_properties(gateway_dns_transport PROPERTIES TIMEOUT 30)
     add_executable(test_saml_policy tests/test_saml_policy.c)
     target_include_directories(test_saml_policy PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_test(NAME saml_callback_policy COMMAND test_saml_policy)

@@ -76,6 +76,7 @@ struct x509_digest {
 
 struct vpn_config {
 	char			gateway_host[GATEWAY_HOST_SIZE + 1];
+	char                    gateway_dns[16]; /* Empty: system DNS; otherwise IPv4. */
 	struct in_addr		gateway_ip;
 	uint16_t		gateway_port;
 	char			username[USERNAME_SIZE + 1];

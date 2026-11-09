@@ -32,6 +32,15 @@
           <span>用户名</span>
           <input autocomplete="username" bind:value={draft.username} />
         </label>
+        <label class="span-2">
+          <span>网关 DNS <em>可选</em></span>
+          <input placeholder="留空使用系统 DNS，例如 223.5.5.5" maxlength="15" list="gateway-dns-options" bind:value={draft.gatewayDns} />
+          <datalist id="gateway-dns-options">
+            <option value="223.5.5.5">阿里 DNS</option>
+            <option value="114.114.114.114">114 DNS</option>
+          </datalist>
+          <small class="field-help">仅用于连接前解析 VPN 服务器，通过 TCP 53 查询。可避开系统 Fake-IP；保留域名证书校验。内网域名通常应使用系统或企业 DNS。</small>
+        </label>
         <label>
           <span>Realm</span>
           <input placeholder="可选" bind:value={draft.realm} />

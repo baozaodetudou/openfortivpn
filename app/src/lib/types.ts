@@ -3,6 +3,7 @@ export type VpnProfile = {
   revision?: number;
   name: string;
   host: string;
+  gatewayDns?: string;
   port: number;
   username: string;
   realm: string;

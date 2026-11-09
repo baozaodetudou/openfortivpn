@@ -22,6 +22,7 @@
 #include "event.h"
 #include "manager_control.h"
 #include "exit_codes.h"
+#include "gateway_dns.h"
 #include "http_server.h"
 
 #include <openssl/ssl.h>
@@ -145,6 +146,8 @@ PPPD_USAGE \
 "                                when tunnel is up.\n"               \
 "  --sni=<sni>                   Specify a different server name (SNI) than the host argument\n" \
 "                                during TLS handshake.\n" \
+"  --gateway-dns=<IPv4>          Resolve only the gateway using this DNS server over TCP 53.\n" \
+"                                Default: system DNS; no fallback when explicitly set.\n" \
 "  --no-routes                   Do not configure routes, same as --set-routes=0.\n" \
 "  --half-internet-routes=[01]   Add two 0.0.0.0/1 and 128.0.0.0/1 routes with higher\n" \
 "                                priority instead of replacing the default route.\n" \
@@ -314,6 +317,7 @@ int main(int argc, char *argv[])
 		{"ifname",               required_argument, NULL, 0},
 		{"set-routes",	         required_argument, NULL, 0},
 		{"sni",                  required_argument, NULL, 0},
+		{"gateway-dns",          required_argument, NULL, 0},
 		{"no-routes",            no_argument, &cli_cfg.set_routes, 0},
 		{"half-internet-routes", required_argument, NULL, 0},
 		{"set-dns",              required_argument, NULL, 0},
@@ -580,6 +584,15 @@ int main(int argc, char *argv[])
 			           "ifname") == 0) {
 				strncpy(cli_cfg.iface_name, optarg, IF_NAMESIZE - 1);
 				cli_cfg.iface_name[IF_NAMESIZE - 1] = '\0';
+				break;
+			}
+			if (strcmp(long_options[option_index].name,
+			           "gateway-dns") == 0) {
+				if (!gateway_dns_server_valid(optarg)) {
+					log_error("gateway-dns must be a unicast IPv4 address.\n");
+					goto user_error;
+				}
+				strcpy(cli_cfg.gateway_dns, optarg);
 				break;
 			}
 			if (strcmp(long_options[option_index].name,

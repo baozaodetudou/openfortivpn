@@ -190,9 +190,9 @@ let editorReturnFocus = null;
 function openEditor(v = null) {
     editorReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     state.editing = v;
-    const p = v?.profile || { id: crypto.randomUUID(), name: '', host: '', port: 443, username: '', realm: '', trustedCert: '', setRoutes: true, setDns: true, pppdUsePeerdns: false, halfInternetRoutes: false, useSudo: true, autoConnect: false, autoReconnect: true };
+    const p = v?.profile || { id: crypto.randomUUID(), name: '', host: '', gatewayDns: '', port: 443, username: '', realm: '', trustedCert: '', setRoutes: true, setDns: true, pppdUsePeerdns: false, halfInternetRoutes: false, useSudo: true, autoConnect: false, autoReconnect: true };
     const f = $('#profile-form');
-    for (const key of ['name', 'host', 'port', 'username', 'realm', 'trustedCert'])
+    for (const key of ['name', 'host', 'gatewayDns', 'port', 'username', 'realm', 'trustedCert'])
         field(f, key).value = String(p[key] ?? '');
     for (const key of ['setRoutes', 'setDns', 'pppdUsePeerdns', 'halfInternetRoutes', 'useSudo', 'autoConnect', 'autoReconnect'])
         field(f, key).checked = !!p[key];
@@ -290,7 +290,7 @@ $('#profile-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     if (state.busy)
         return;
-    const f = e.currentTarget, old = state.editing, p = { id: f.dataset.id, name: field(f, "name").value.trim(), host: field(f, "host").value.trim(), port: Number(field(f, "port").value), username: field(f, "username").value.trim(), realm: field(f, "realm").value.trim(), trustedCert: field(f, "trustedCert").value.trim(), setRoutes: field(f, "setRoutes").checked, setDns: field(f, "setDns").checked, pppdUsePeerdns: field(f, "pppdUsePeerdns").checked, halfInternetRoutes: field(f, "halfInternetRoutes").checked, useSudo: field(f, "useSudo").checked, autoConnect: field(f, "autoConnect").checked, autoReconnect: field(f, "autoReconnect").checked }, password = field(f, "password").value, rememberPassword = field(f, "rememberPassword").checked;
+    const f = e.currentTarget, old = state.editing, p = { id: f.dataset.id, name: field(f, "name").value.trim(), host: field(f, "host").value.trim(), gatewayDns: field(f, "gatewayDns").value.trim(), port: Number(field(f, "port").value), username: field(f, "username").value.trim(), realm: field(f, "realm").value.trim(), trustedCert: field(f, "trustedCert").value.trim(), setRoutes: field(f, "setRoutes").checked, setDns: field(f, "setDns").checked, pppdUsePeerdns: field(f, "pppdUsePeerdns").checked, halfInternetRoutes: field(f, "halfInternetRoutes").checked, useSudo: field(f, "useSudo").checked, autoConnect: field(f, "autoConnect").checked, autoReconnect: field(f, "autoReconnect").checked }, password = field(f, "password").value, rememberPassword = field(f, "rememberPassword").checked;
     if (p.autoConnect && (!rememberPassword || (!password && !old?.passwordStored)))
         return toast('自动连接需要输入并保存 VPN 密码', true);
     state.busy = true;
